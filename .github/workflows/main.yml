@@ -31,11 +31,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: build
-        run: |
-          yarn install
-          yarn run build:prod
-          yarn run install:python
+      - name: Install Node.js packages
+        run: yarn install
+      
+      - name: Install Python packages
+        run: yarn run install:python
 
-      - name: test
-        run: MOCHA_WEBDRIVER_HEADLESS=1 yarn run test
+      - name: Build Node.js code
+        run: yarn run build:prod
+
+      - name: Run tests
+        run: VERBOSE=1 DEBUG=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test
