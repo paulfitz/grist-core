@@ -31,12 +31,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install Python packages
+        run: |
+          pip install virtualenv
+          yarn run install:python
+
       - name: Install Node.js packages
         run: yarn install
       
-      - name: Install Python packages
-        run: yarn run install:python
-
       - name: Build Node.js code
         run: yarn run build:prod
 
