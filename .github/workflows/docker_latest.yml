@@ -49,7 +49,7 @@ jobs:
       - name: Build Node.js code
         run: yarn run build:prod
       - name: Run tests
-        run: VERBOSE=1 DEBUG=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:docker
+        run: TEST_IMAGE=${{ github.repository_owner }}/grist VERBOSE=1 DEBUG=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:docker
       - name: Push to Docker Hub
         uses: docker/build-push-action@v1
         with:
