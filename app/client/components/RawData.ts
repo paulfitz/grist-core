@@ -113,7 +113,7 @@ const cssOverlay = styled('div', `
 `);
 
 const cssSectionWrapper = styled('div', `
-  background: white;
+  background: var(--grist-color-white);
   height: 100%;
   display: flex;
   flex-direction: column;

@@ -297,7 +297,7 @@ const cssCustomMenuItem = styled('div', `
   padding: 8px 8px;
   display: flex;
   &:not(:hover) {
-    background-color: white;
+    background-color: var(--grist-color-white);
     color: black;
     --icon-color: black;
   }

@@ -124,7 +124,7 @@ const cssSnapshotTime = styled('div', `
 const cssSnapshotCard = styled('div', `
   border: 1px solid ${colors.mediumGrey};
   padding: 8px;
-  background: white;
+  background: var(--grist-color-white);
   border-radius: 8px;
   overflow: hidden;
   display: flex;

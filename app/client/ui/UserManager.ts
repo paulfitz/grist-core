@@ -743,7 +743,7 @@ const cssUserImagePlus = styled(cssUserImage, `
   }
 
   .${cssMenuItem.className}-sel & {
-    background-color: white;
+    background-color: var(--grist-color-white);
     color: ${colors.lightGreen};
   }
 `);

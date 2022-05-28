@@ -39,7 +39,7 @@ const attachmentIcon = styled('div.attachment_icon.glyphicon.glyphicon-paperclip
 
 const attachmentPreview = styled('div', `
   color: black;
-  background-color: white;
+  background-color: var(--grist-color-white);
   border: 1px solid #bbb;
   margin: 0 2px 2px 0;
   position: relative;

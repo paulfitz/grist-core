@@ -72,7 +72,7 @@ export const cssToken = styled('div', `
 
 export const cssInvalidToken = styled('div', `
   &-invalid {
-    background-color: white !important;
+    background-color: var(--grist-color-white) !important;
     box-shadow: inset 0 0 0 1px var(--grist-color-error);
     color: ${colors.slate};
   }

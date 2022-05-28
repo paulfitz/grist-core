@@ -542,7 +542,7 @@ function tabContentToDom(content: Observable<TabContent[]>|TabContent[]|IDomComp
 }
 
 const cssOverlay = styled('div', `
-  background-color: white;
+  background-color: var(--grist-color-white);
   opacity: 0.8;
   position: absolute;
   top: 0;

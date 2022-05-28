@@ -406,7 +406,7 @@ const cssListBox = styled('div', `
   padding-right: 4px;
   border: 1px solid ${colors.hover};
   border-radius: 4px;
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const cssListBoxInactive = styled(cssListBox, `

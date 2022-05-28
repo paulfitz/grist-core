@@ -184,7 +184,7 @@ const cssRefItem = styled('li', `
     position: sticky;
     bottom: 0px;
     height: ${addNewHeight};
-    background-color: white;
+    background-color: var(--grist-color-white);
     border-top: 1px solid ${colors.mediumGrey};
     scroll-margin-bottom: initial;
   }

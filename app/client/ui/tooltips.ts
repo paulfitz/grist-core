@@ -221,7 +221,7 @@ const cssTooltipCloseButton = styled('div', `
   border-radius: 16px;
 
   &:hover {
-    background-color: white;
+    background-color: var(--grist-color-white);
     --icon-color: black;
   }
 `);

@@ -98,7 +98,7 @@ const cssCard = styled('div', `
   margin-right: 24px;
   max-width: 624px;
   padding: 32px 56px 32px 32px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   box-shadow: 0 2px 18px 0 rgba(31,37,50,0.31), 0 0 1px 0 rgba(76,86,103,0.24);
   display: flex;
   overflow: hidden;

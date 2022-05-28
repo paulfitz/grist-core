@@ -103,7 +103,7 @@ div:hover > .kf_tooltip {
   min-width: 16px;
   min-height: 16px;
   padding: 4px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   border-radius: 2px;
   box-shadow: 0 1px 1px 1px rgba(0,0,0,0.15);
   line-height: 1.1rem;
@@ -129,7 +129,7 @@ div:hover > .kf_tooltip {
   right: 20px;
   width: 10px;
   height: 10px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   transform: rotate(45deg);
   z-index: 11;
 }
@@ -497,7 +497,7 @@ fieldset:disabled {
 .kf_status_panel {
   padding:0.5rem;
   box-shadow:0 1px 2px #aaa;
-  background: white;
+  background: var(--grist-color-white);
   margin:0 0.5rem 0.5rem;
   border-radius:3px;
   overflow:hidden;

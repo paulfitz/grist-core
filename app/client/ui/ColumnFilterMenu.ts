@@ -515,7 +515,7 @@ const cssMenu = styled('div', `
   max-width: 400px;
   max-height: 90vh;
   outline: none;
-  background-color: white;
+  background-color: var(--grist-color-white);
   padding-top: 0;
   padding-bottom: 12px;
 `);

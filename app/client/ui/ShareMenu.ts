@@ -296,7 +296,7 @@ const cssShareCircle = styled(cssHoverCircle, `
 `);
 
 const cssShareIcon = styled(cssTopBarBtn, `
-  background-color: white;
+  background-color: var(--grist-color-white);
   height: 30px;
   width: 30px;
 `);
@@ -310,7 +310,7 @@ const cssMenuSplitLinkText = styled('div', `
   flex: auto;
   padding: var(--weaseljs-menu-item-padding, 8px 24px);
   &:not(:hover) {
-    background-color: white;
+    background-color: var(--grist-color-white);
     color: black;
   }
 `);
@@ -320,7 +320,7 @@ const cssMenuIconLink = styled('a', `
   flex: none;
   padding: 8px 24px;
 
-  background-color: white;
+  background-color: var(--grist-color-white);
   --icon-color: ${colors.lightGreen};
   &:hover {
     background-color: ${colors.mediumGreyOpaque};

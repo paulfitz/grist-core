@@ -254,7 +254,7 @@ export class ChoiceListEditor extends NewBaseEditor {
 }
 
 const cssCellEditor = styled('div', `
-  background-color: white;
+  background-color: var(--grist-color-white);
   font-family: var(--grist-font-family-data);
   font-size: var(--grist-medium-font-size);
 `);
@@ -341,7 +341,7 @@ export const cssChoiceList = styled('div', `
 
 const cssReadonlyStyle = styled('div', `
   padding-left: 16px;
-  background: white;
+  background: var(--grist-color-white);
 `);
 
 export const cssMatchText = styled('span', `

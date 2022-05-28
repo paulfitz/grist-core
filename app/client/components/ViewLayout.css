@@ -19,7 +19,7 @@
 }
 
 .viewsection_content {
-  background-color: #ffffff;
+  background-color: vars(--grist-color-white);
   overflow: visible;
   margin: 12px;
 }

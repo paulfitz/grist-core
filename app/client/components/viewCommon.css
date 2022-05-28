@@ -19,7 +19,7 @@
      selected fields - this still remains white.
      TODO: consider making this color the single source
   */
-  background: white;
+  background: var(--grist-color-white);
 }
 
 .record.record-hlines {  /* Overwrites style, width set on element */
@@ -31,7 +31,7 @@
 }
 
 .record.record-add {
-  background-color: #f6f6ff !important;  /* important to win over zebra stripes */
+  background-color: var(--grist-add-background-color) !important;  /* important to win over zebra stripes */
 }
 
 .field {

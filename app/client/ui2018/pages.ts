@@ -185,6 +185,6 @@ const cssPageMenuTrigger = styled('div', `
 
 const cssPageIcon = styled(icon, `
   .${itemHeader.className}.selected & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 `);

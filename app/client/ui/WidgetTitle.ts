@@ -201,7 +201,7 @@ const cssRenamePopup = styled('div', `
   flex-direction: column;
   min-width: 280px;
   padding: 16px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   border-radius: 2px;
   outline: none;
 `);

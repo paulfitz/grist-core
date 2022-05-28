@@ -15,7 +15,7 @@ export function menuToggle(obs: IDisposableOwner, ...args: DomArg[]) {
 }
 
 const cssMenuToggle = styled('div.menu_toggle', `
-  background: white;
+  background: var(--grist-color-white);
   cursor: pointer;
   --icon-color: ${colors.slate};
   border: 1px solid ${colors.slate};

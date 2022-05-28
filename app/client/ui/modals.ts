@@ -15,7 +15,7 @@ const modalBacker = styled('div', `
 `);
 
 const modal = styled('div', `
-  background-color: white;
+  background-color: var(--grist-color-white);
   color: black;
   margin: 0 auto;
   border-radius: 4px;

@@ -104,7 +104,7 @@ const Key = styled('div', `
   margin: 0px 2px;
   border: 1px solid ${colors.slate};
   color: black;
-  background-color: white;
+  background-color: var(--grist-color-white);
   font-family: inherit;
   font-style: normal;
   white-space: nowrap;

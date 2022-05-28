@@ -326,7 +326,7 @@ const Container = styled('div', `
   z-index: 1000;
   max-width: 490px;
   position: relative;
-  background-color: white;
+  background-color: var(--grist-color-white);
   box-shadow: 0 2px 18px 0 rgba(31,37,50,0.31), 0 0 1px 0 rgba(76,86,103,0.24);
   outline: unset;
 `);
@@ -376,7 +376,7 @@ const ArrowContainer = styled('div', `
 const ContentWrapper = styled('div', `
   position: relative;
   padding: 32px;
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const Footer = styled('div', `

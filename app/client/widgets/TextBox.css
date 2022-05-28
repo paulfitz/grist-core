@@ -38,7 +38,7 @@
     background-color: var(--grist-color-cursor);
   }
   .formula_field.invalid::before {
-    background-color: white;
+    background-color: var(--grist-color-white);
     color: #ffb6c1;
   }
   .formula_field_edit.invalid::before {

@@ -19,7 +19,7 @@ export const cssSelectBtn = styled('div', `
   width: 100%;
   height: 30px;
   line-height: 16px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   color: ${colors.dark};
   --icon-color: ${colors.dark};
   font-size: ${vars.mediumFontSize};

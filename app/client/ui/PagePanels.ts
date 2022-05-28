@@ -203,7 +203,7 @@ const cssPageContainer = styled(cssVBox, `
   right: 0;
   bottom: 0;
   min-width: 600px;
-  background-color: ${colors.lightGrey};
+  paulfitz-hit-background-color: ${colors.lightGrey};
 
   @media ${mediaSmall} {
     & {
@@ -262,7 +262,7 @@ const cssMainPane = styled(cssVBox, `
   position: relative;
   flex: 1 1 0px;
   min-width: 0px;
-  background-color: white;
+  paulfitz-hit-background-color: var(--grist-color-white);
   z-index: 1;
 `);
 const cssRightPane = styled(cssVBox, `
@@ -325,7 +325,7 @@ const cssTopHeader = styled('div', `
 `);
 const cssBottomFooter = styled ('div', `
   height: 48px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   z-index: 20;
   display: flex;
   flex-direction: row;

@@ -188,7 +188,7 @@ function buildConnectStateButton(state: ConnectState): Element {
 
 
 const cssDropdownWrapper = styled('div', `
-  background-color: white;
+  background-color: var(--grist-color-white);
   border: 1px solid ${colors.darkGrey};
   padding: 0px;
 `);

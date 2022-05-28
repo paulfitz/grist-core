@@ -17,7 +17,7 @@
   top: 0.3rem;
   right: 0.2rem;
 
-  background-color: white;
+  background-color: var(--grist-color-white);
   padding: 0.2rem;
   border-radius: 1rem;
   margin: 0;

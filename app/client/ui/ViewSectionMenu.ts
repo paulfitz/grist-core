@@ -340,11 +340,11 @@ const cssIcon = styled(icon, `
   background-color: ${colors.slate};
 
   .${cssMenuIconWrapper.className}-changed & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 
   .${clsOldUI.className} & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 
   &-green {
@@ -372,7 +372,7 @@ const cssFilterIcon = styled(cssIcon, `
     background-color: ${colors.lightGreen};
   }
   .${cssFilterMenuWrapper.className}-unsaved & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 `);
 
@@ -424,7 +424,7 @@ const cssSmallIconWrapper = styled('div', `
     background-color: ${colors.slate};
   }
   & > .${cssIcon.className} {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 `);
 

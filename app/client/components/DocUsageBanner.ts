@@ -159,13 +159,13 @@ const cssIcon = styled(icon, `
 `);
 
 const cssWhiteIcon = styled(cssIcon, `
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const cssCloseButton = styled(cssIcon, `
   flex-shrink: 0;
   cursor: pointer;
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const cssExpandButton = cssCloseButton;

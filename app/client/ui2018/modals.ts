@@ -420,7 +420,7 @@ export function cssModalWidth(style: ModalWidth) {
 // the flex container, to ensure the full item can be scrolled in case of overflow.
 // See https://stackoverflow.com/a/33455342/328565
 const cssModalDialog = styled('div', `
-  background-color: white;
+  background-color: var(--grist-color-white);
   min-width: 428px;
   color: black;
   margin: auto;

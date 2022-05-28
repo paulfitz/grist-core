@@ -111,7 +111,7 @@ const cssOptions = styled('div', `
   right: 0;
   top: 46px;
   z-index: 1;
-  background: white;
+  background: var(--grist-color-white);
   padding: 2px 4px;
   overflow: hidden;
   white-space: nowrap;

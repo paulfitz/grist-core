@@ -73,7 +73,7 @@ export const cssChoiceACItem = styled('li', `
     position: sticky;
     bottom: 0px;
     height: ${ADD_NEW_HEIGHT};
-    background-color: white;
+    background-color: var(--grist-color-white);
     border-top: 1px solid ${colors.mediumGreyOpaque};
     scroll-margin-bottom: initial;
   }

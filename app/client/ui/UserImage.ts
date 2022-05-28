@@ -120,7 +120,7 @@ const cssUserPicture = styled('img', `
   width: 100%;
   height: 100%;
   object-fit: cover;
-  background-color: white;
+  background-color: var(--grist-color-white);
   border-radius: 100px;
   border: 1px solid white;    /* make sure edge of circle with initials is not visible */
   box-sizing: content-box;    /* keep the border outside of the size of the image */

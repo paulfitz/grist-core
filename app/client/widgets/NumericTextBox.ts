@@ -213,11 +213,11 @@ const cssSpinnerBottom = styled(icon, `
 
 const cssModeSelect = styled(makeButtonSelect, `
   flex: 4 4 0px;
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const cssSignSelect = styled(makeButtonSelect, `
   flex: 1 1 0px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   margin-left: 16px;
 `);

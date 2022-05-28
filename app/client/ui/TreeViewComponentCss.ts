@@ -57,7 +57,7 @@ export const itemHeader = styled('div', `
 export const dropdown = styled(icon, `
   background-color: ${colors.slate};
   .${itemHeaderWrapper.className}-not-dragging > .${itemHeader.className}.selected & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 `);
 

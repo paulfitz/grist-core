@@ -42,7 +42,7 @@
 }
 
 .gridview_corner_spacer { /* spacer in .gridview_data_header */
-  width: 4rem; /* matches row_num width */
+  width: var(--grist-left);  /* was 4rem */ /* matches row_num width */
   flex: none;
 }
 
@@ -66,7 +66,7 @@
   position: sticky;
   left: 0px;
   overflow: hidden;
-  width: 4rem; /* Also should match width for .gridview_header_corner, and the overlay elements */
+  width: var(--grist-left); /* Also should match width for .gridview_header_corner, and the overlay elements */
   flex: none;
 
   border-bottom: 1px solid var(--grist-color-dark-grey);
@@ -128,7 +128,7 @@
     border-left: 1px solid var(--grist-color-dark-grey);
   }
   .print-widget .gridview_data_header {
-    padding-left: 4rem !important;
+    padding-left: var(--grist-left) !important;
   }
   .print-widget .gridview_data_pane .print-all-rows {
     display: table-row-group;
@@ -148,11 +148,11 @@
 .scroll_shadow_top,
 .scroll_shadow_left {
   position:absolute;
-  background-color: var(--grist-color-light-grey) !important;
+  paulfitz-hit-background-color: var(--grist-color-light-grey) !important;
 }
 
 .gridview_data_corner_overlay {
-  width: 4rem;
+  width: var(--grist-left);
   height: calc(var(--gridview-header-height) + 1px); /* matches gridview_data_header height (+border) */
   top: 1px; /* go under 1px border on scrollpane */
   border-bottom: 1px solid lightgray;
@@ -223,7 +223,7 @@
 }
 
 .gridview_header_backdrop_left {
-  width: calc(4rem + 1px); /* Matches rowid width (+border) */
+  width: calc(var(--grist-left) + 1px); /* Matches rowid width (+border) */
   height:100%;
   top: 1px; /* go under 1px border on scrollpane */
   z-index: 1;
@@ -338,7 +338,7 @@
 /* printing frozen fields is straightforward - just need to remove transparency */
 @media print {
   .field.frozen  {
-    background: white !important;
+    background: var(--grist-color-white) !important;
   }
   .column_names .column_name.frozen {
     background: var(--grist-color-light-grey) !important;

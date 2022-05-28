@@ -349,7 +349,7 @@ const cssFontOption = styled('div', `
   display: grid;
   place-items: center;
   flex-grow: 1;
-  background: white;
+  background: var(--grist-color-white);
   height: 24px;
   cursor: pointer;
   &:hover:not(&-selected) {
@@ -404,7 +404,7 @@ const cssVSpacer = styled('div', `
 
 const cssContainer = styled('div', `
   padding: 18px 16px;
-  background-color: white;
+  background-color: var(--grist-color-white);
   box-shadow: 0 2px 16px 0 rgba(38,38,51,0.6);
   z-index: 20;
   margin: 2px 0;

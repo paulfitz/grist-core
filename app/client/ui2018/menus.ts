@@ -502,7 +502,7 @@ export const cssOptionRowIcon = styled(cssOptionIcon, `
   flex: none;
 
   .${weasel.cssMenuItem.className}-sel & {
-    background-color: white;
+    background-color: var(--grist-color-white);
   }
 `);
 

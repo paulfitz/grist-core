@@ -1,42 +1,114 @@
+@import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+html, body {
+  background: none !important;
+  background-color: black !important;
+  font-family: 'VT323', monospace !important;
+  color: #fff;
+
+  background-color: black !important;
+  background-image: radial-gradient(
+    rgba(0, 30, 0, 1), black 120%
+  ) !important;
+  height: 100vh !important;
+}
+
+body::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    #00660022 0,
+    #00660022 1px,
+    #9198e500 2px,
+    #9198e500 4px,
+    #00660022 5px
+  ) left center no-repeat, radial-gradient(
+    rgba(0, 30, 0, 0.0) 0%, rgba(0, 30, 0, 0.0) 60%, rgba(0, 0, 0, 0.60) 90%
+  ) !important;              
+}
+
 :root {
   /* logo */
   --icon-GristLogo: url("ui-icons/Logo/GristLogo.svg") !important;
-  --grist-logo-bg: #040404 !important;
+  --grist-logo-bg: #000 !important;
   --grist-logo-size: 22px 22px !important;
 
   /* colors */
-  --grist-color-light-grey: #F7F7F7 !important;
+  --grist-color-white: #ffffff00 !important;
+  --paulfitz-hit-grist-color-white: #080808 !important;
+  --grist-color-light-grey: #080808 !important;
   --grist-color-medium-grey: rgba(217,217,217,0.6) !important;
-  --grist-color-medium-grey-opaque: #E8E8E8 !important;
-  --grist-color-dark-grey: #D9D9D9 !important;
-  --grist-color-light: #FFFFFF !important;
-  --grist-color-dark: #262633 !important;
-  --grist-color-dark-bg: #262633 !important;
-  --grist-color-slate: #929299 !important;
-  --grist-color-light-green: #16B378 !important;
-  --grist-color-dark-green: #009058 !important;
-  --grist-color-darker-green: #007548 !important;
-  --grist-color-lighter-green: #b1ffe2 !important;
-  --grist-color-lighter-blue: #87b2f9 !important;
-  --grist-color-light-blue: #3B82F6 !important;
-  --grist-color-cursor: #16B378 !important;
-  --grist-color-selection: rgba(22,179,120,0.15) !important;
-  --grist-color-selection-opaque: #DCF4EB !important;
-  --grist-color-selection-darker-opaque: #d6eee5 !important;
-  --grist-color-inactive-cursor: #A2E1C9 !important;
-  --grist-color-hover: #bfbfbf !important;
-  --grist-color-error: #D0021B !important;
-  --grist-color-warning: #F9AE41 !important;
-  --grist-color-warning-bg: #dd962c !important;
+  --grist-color-medium-grey-opaque: #696 !important;
+  --grist-color-dark-grey: #474 !important;
+  --grist-color-light: #000000 !important;
+  --grist-color-dark: #d9d9cc !important;
+  --grist-color-dark-bg: #282 !important;
+  --grist-color-slate: #151 !important;
+  --grist-color-light-green: #3a3 !important;
+  --grist-color-dark-green: #3d3 !important;
+  --grist-color-darker-green: #3f3 !important;
+  --grist-color-lighter-green: #4e001d !important;
+  --grist-color-lighter-blue: #784d06 !important;
+  --grist-color-light-blue: #c47d09 !important;
+  --grist-color-cursor: #3a3 !important;
+  --grist-color-selection: rgba(22,179,22,0.9) !important;
+  --grist-color-selection-opaque: #181 !important;
+  --grist-color-selection-darker-opaque: #292 !important;
+  --grist-color-inactive-cursor: #5d1e36 !important;
+  --grist-color-hover: #292 !important;
+  --grist-color-error: #2ffde4 !important;
+  --grist-color-warning: #0651be !important;
+  --grist-color-warning-bg: #2269d3 !important;
   --grist-color-backdrop: rgba(38,38,51,0.9) !important;
-  --grist-label-text-bg: #FFFFFF !important;
-  --grist-label-active-bg: #F0F0F0 !important;
-  --grist-primary-fg: #16B378 !important;
-  --grist-primary-fg-hover: #009058 !important;
-  --grist-primary-bg: #ffffff !important;
-  --grist-control-bg: #ffffff !important;
-  --grist-control-fg: #16B378 !important;
-  --grist-primary-fg-hover: #009058 !important;
-  --grist-control-border: 1px solid #11B683 !important;
-  --grist-toast-bg: #040404 !important;
+  --grist-label-text-bg: #000000 !important;
+  --grist-label-active-bg: #383 !important;
+  --grist-primary-fg: #3a3 !important;
+  --grist-primary-fg-hover: #3d3 !important;
+  --grist-primary-bg: #000000 !important;
+  --grist-control-bg: #000000 !important;
+  --grist-control-fg: #3a3 !important;
+  --grist-primary-fg-hover: #3d3 !important;
+  --grist-control-border: 1px solid #181 !important;
+  --grist-toast-bg: #fbfbfb !important;
+  --grist-cell-background-color: #000000ff !important;
+  --grist-add-background-color: #404040ff !important;
+  --grist-diff-background-color: #000000ff !important;
+  --grist-actual-cell-color: #ffffffff !important;
+  --grist-diff-color: #ffffffff !important;
+  --circle-color: #ffffff00 !important;
+
+  /* font */
+  --grist-font-family-data: 'VT323', monospace !important;
+  --grist-font-family: 'VT323', monospace !important;
+  --grist-medium-font-size: 20px !important;  /* 14px? */
+  --grist-small-font-size: 20px !important;
+  --grist-x-small-font-size: 20px !important;
+  --grist-big-control-font-size: 20px !important;
+  --grist-left: 52px !important;  /* 4rem? */
+}
+
+.field, .gridview_data_row_num, .record, .field.column_name, .gridview_data_corner_overlay, .gridview_header_backdrop_top, .gridview_header_backdrop_left {
+  border: none !important;
+}
+
+.test-dp-add-new div {
+  border-radius: 0px !important;
+}
+
+.ace_text-input, .ace_editor, .g-code-viewer, .test-field-col-id {
+  font-family: 'VT323', monospace !important;
+  font-size: 20px !important;
+}
+
+svg.main-svg {
+  background: none !important;
+}
+
+input {
+  background: none;
 }

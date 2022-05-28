@@ -429,7 +429,7 @@ const cssContainer = styled('div', `
   display: flex;
   flex-direction: column;
   user-select: none;
-  background-color: white;
+  background-color: var(--grist-color-white);
 `);
 
 const cssPopupWrapper = styled('div', `
