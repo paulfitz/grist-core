@@ -53,8 +53,10 @@ export function makeSimpleCreator(opts: {
   storage?: ICreateStorageOptions[],
   activationMiddleware?: (db: HomeDBManager, app: express.Express) => Promise<void>,
   notifier?: ICreateNotifierOptions,
+  Shell?(): IShell,
 }): ICreate {
   return {
+    ...{Shell: opts.Shell},
     Billing(db) {
       return {
         addEndpoints() { /* do nothing */ },

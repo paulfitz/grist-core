@@ -1,7 +1,10 @@
 {
   "extends": "../buildtools/tsconfig-base.json",
   "files": [],
-  "include": [],
+  "include": [
+    "electron/**/*",
+    "*.js"
+  ],
   "references": [
     { "path": "./client" },
     { "path": "./server" },

@@ -16,7 +16,8 @@
     "test:server": "GRIST_SESSION_COOKIE=grist_test_cookie NODE_PATH=_build:_build/stubs:_build/ext mocha _build/test/server/**/*.js _build/test/gen-server/**/*.js",
     "test:smoke": "NODE_PATH=_build:_build/stubs:_build/ext mocha _build/test/nbrowser/Smoke.js",
     "test:docker": "./test/test_under_docker.sh",
-    "cli": "NODE_PATH=_build:_build/stubs:_build/ext node _build/app/server/companion.js"
+    "cli": "NODE_PATH=_build:_build/stubs:_build/ext node _build/app/server/companion.js",
+    "electron": "bin/electron app/electron/runPrebuild.js"
   },
   "keywords": [
     "grist",
@@ -108,7 +109,10 @@
     "csv": "4.0.0",
     "diff-match-patch": "1.0.5",
     "double-ended-queue": "2.1.0-0",
-    "electron": "3.0.7",
+    "electron": "19.0.9",
+    "electron-builder": "20.29.0",
+    "electron-mocha": "6.0.4",
+    "electron-updater": "3.1.6",
     "exceljs": "4.2.1",
     "express": "4.16.4",
     "file-type": "14.1.4",
