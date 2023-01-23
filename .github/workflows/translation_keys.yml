@@ -38,7 +38,7 @@ jobs:
           fi
 
       - name: Prepare PR
-        if: steps.scan-keys.outputs.CHANGED == 'true'
+        if: env.CHANGED == 'true'
         run: |
           git commit -m "update translation keys" -a
           gh pr create --fill --head
