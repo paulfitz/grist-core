@@ -45,11 +45,16 @@ jobs:
       - name: Prepare PR
         if: env.CHANGED == 'true'
         run: |
+          echo Commit
           git commit -m "update translation keys" -a
+          echo Push
           git push origin HEAD:translation-keys -f
+          echo Get existing PR number
           num=$(gh pr list --search "update translation keys" --json number -q ".[].number")
+          echo "PR? $num"
           if [[ "$num" = "" ]]; then
-            gh pr create --fill
+            echo "Try to create PR"
+            gh pr create --fill --head origin:translation-keys
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
