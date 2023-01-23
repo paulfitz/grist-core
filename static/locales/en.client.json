@@ -140,7 +140,8 @@
     },
     "CodeEditorPanel": {
         "Access denied": "Access denied",
-        "Code View is available only when you have full document access.": "Code View is available only when you have full document access."
+        "Code View is available only when you have full document access.": "Code View is available only when you have full document access.",
+        "Code View is available only when you have full document access my friend.": "Code View is available only when you have full document access my friend."
     },
     "ColorSelect": {
         "Apply": "Apply",
