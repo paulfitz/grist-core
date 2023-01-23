@@ -5,12 +5,17 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  pull-requests: write
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0 # Let's get all the branches
 
       - name: Use Node.js
         uses: actions/setup-node@v1
@@ -37,10 +42,24 @@ jobs:
             echo "CHANGED=true" >> $GITHUB_ENV
           fi
 
-      - name: Prepare PR
-        if: steps.scan-keys.outputs.CHANGED == 'true'
+      - name: setup git config
         run: |
-          git commit -m "update translation keys" -a
-          gh pr create --fill --head
+          git config user.name "Paul's Grist Bot"
+          git config user.email "<paul+bot@getgrist.com>"
+
+      - name: Prepare PR
+        if: env.CHANGED == 'true'
+        run: |
+          echo Commit
+          git commit -m "automated update to translation keys" -a
+          echo Push
+          git push --set-upstream origin HEAD:translation-keys -f
+          echo Get existing PR number
+          num=$(gh pr list --search "automated update to translation keys" --json number -q ".[].number")
+          echo "PR? $num"
+          if [[ "$num" = "" ]]; then
+            echo "Try to create PR"
+            gh pr create --fill
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

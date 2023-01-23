@@ -38,7 +38,8 @@
         "User Attributes": "User Attributes",
         "View As": "View As",
         "Seed rules": "Seed rules",
-        "When adding table rules, automatically add a rule to grant OWNER full access.": "When adding table rules, automatically add a rule to grant OWNER full access."
+        "When adding table rules, automatically add a rule to grant OWNER full access.": "When adding table rules, automatically add a rule to grant OWNER full access.",
+        "Permission to edit document structure": "Permission to edit document structure"
     },
     "AccountPage": {
         "API": "API",
@@ -603,7 +604,8 @@
         "Return to viewing as yourself": "Return to viewing as yourself",
         "TOOLS": "TOOLS",
         "Tour of this Document": "Tour of this Document",
-        "Validate Data": "Validate Data"
+        "Validate Data": "Validate Data",
+        "Settings": "Settings"
     },
     "TopBar": {
         "Manage Team": "Manage Team"
