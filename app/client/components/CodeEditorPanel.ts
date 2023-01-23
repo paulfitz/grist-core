@@ -29,7 +29,7 @@ export class CodeEditorPanel extends DisposableWithEvents {
       {tabIndex: "-1"},
       dom.maybe(this._denied, () => dom('div.g-code-panel-denied',
         dom('h2', dom.text(t("Access denied"))),
-        dom('div', dom.text(t("Code View is available only when you have full document access."))),
+        dom('div', dom.text(t("Code View is available only when you have full document access my friend."))),
       )),
       dom.maybe(this._schema, (schema) => {
         // The reason to scope and rebuild instead of using `kd.text(schema)` is because
