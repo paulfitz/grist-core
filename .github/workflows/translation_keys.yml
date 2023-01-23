@@ -1,0 +1,45 @@
+name: Translation keys
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Use Node.js
+        uses: actions/setup-node@v1
+        with:
+          node-version: 16
+
+      - name: Install Node.js packages
+        run: yarn install
+
+      - name: Build code
+        run: yarn run build:prod
+
+      - name: Scan for keys
+        id: scan-keys
+        run: |
+          git checkout -b translation-keys
+          yarn run generate:translation
+          git status --porcelain
+          if [[ $(git status --porcelain | wc -l) -eq "0" ]]; then
+            echo "No changes"
+            echo "CHANGED=false" >> $GITHUB_ENV
+          else
+            echo "Changes detected"
+            echo "CHANGED=true" >> $GITHUB_ENV
+          fi
+
+      - name: Prepare PR
+        if: steps.scan-keys.outputs.CHANGED == 'true'
+        run: |
+          git commit -m "update translation keys" -a
+          gh pr create --fill --head
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
