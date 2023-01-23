@@ -37,6 +37,11 @@ jobs:
             echo "CHANGED=true" >> $GITHUB_ENV
           fi
 
+      - name: setup git config
+        run: |
+          git config user.name "Paul's Grist Bot"
+          git config user.email "<paul+bot@getgrist.com>"
+
       - name: Prepare PR
         if: env.CHANGED == 'true'
         run: |
