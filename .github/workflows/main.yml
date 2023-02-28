@@ -24,11 +24,13 @@ jobs:
         uses: actions/setup-node@v1
         with:
           node-version: ${{ matrix.node-version }}
+          cache: 'yarn'
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
+          cache: 'pip'
 
       - name: Install Python packages
         run: |
@@ -39,7 +41,7 @@ jobs:
         run: yarn install
 
       - name: Run eslint
-        if: matrix.os == 't1'
+        if: matrix.tests == 't1'
         run: yarn run lint:ci
 
       - name: Make sure bucket is versioned
@@ -52,15 +54,15 @@ jobs:
         run: yarn run build:prod
 
       - name: Run smoke test
-        if: matrix.os == 't1'
+        if: matrix.tests == 't1'
         run: VERBOSE=1 DEBUG=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:smoke
 
       - name: Run python tests
-        if: matrix.os == 't1'
+        if: matrix.tests == 't1'
         run: yarn run test:python
 
       - name: Run server tests with minio and redis
-        if: matrix.os == 't2'
+        if: matrix.tests == 't2'
         run: MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:server
         env:
           GRIST_DOCS_MINIO_ACCESS_KEY: administrator
@@ -72,11 +74,12 @@ jobs:
           GRIST_DOCS_MINIO_BUCKET: grist-docs-test
 
       - name: Run main tests without minio and redis
-        if: matrix.os == 't3'
+        if: matrix.tests == 't3'
         run: MOCHA_WEBDRIVER_HEADLESS=1 yarn run test --exclude '_build/test/server/**/*'
 
       - name: Update candidate branch
-        if: ${{ github.event_name == 'push' && matrix.os == 't1' }}
+        # OH, this needs work, as a follow-up job
+        if: ${{ github.event_name == 'push' && matrix.tests == 't1' }}
         uses: ad-m/github-push-action@8407731efefc0d8f72af254c74276b7a90be36e1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
