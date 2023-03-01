@@ -16,18 +16,25 @@ jobs:
       matrix:
         python-version: [3.9]
         node-version: [14.x]
-        tests: [t1, t2, t3, t4, t5]
+        tests:
+          - ':lint:python:client:common:smoke:'
+          - ':server:'
+          - ':nbrowser-1-of-5:'
+          - ':nbrowser-2-of-5:'
+          - ':nbrowser-3-of-5:'
+          - ':nbrowser-4-of-5:'
+          - ':nbrowser-5-of-5:'
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v1
+        uses: actions/setup-node@v3
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'yarn'
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -41,7 +48,7 @@ jobs:
         run: yarn install
 
       - name: Run eslint
-        if: matrix.tests == 't1'
+        if: matrix.tests == ':lint:'
         run: yarn run lint:ci
 
       - name: Make sure bucket is versioned
@@ -54,16 +61,25 @@ jobs:
         run: yarn run build:prod
 
       - name: Run smoke test
-        if: matrix.tests == 't1'
+        if: contains(matrix.tests, ':smoke:')
         run: VERBOSE=1 DEBUG=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:smoke
 
       - name: Run python tests
-        if: matrix.tests == 't1'
+        if: contains(matrix.tests, ':python:')
         run: yarn run test:python
 
+      - name: Run client tests
+        if: contains(matrix.tests, ':client:')
+        run: yarn run test:client
+
+      - name: Run common tests
+        if: contains(matrix.tests, ':common:')
+        run: yarn run test:common
+
       - name: Run server tests with minio and redis
-        if: matrix.tests == 't2'
-        run: MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:server
+        if: contains(matrix.tests, ':server:')
+        run: |
+          MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:server
         env:
           GRIST_DOCS_MINIO_ACCESS_KEY: administrator
           GRIST_DOCS_MINIO_SECRET_KEY: administrator
@@ -74,8 +90,12 @@ jobs:
           GRIST_DOCS_MINIO_BUCKET: grist-docs-test
 
       - name: Run main tests without minio and redis
-        if: matrix.tests == 't3'
-        run: MOCHA_WEBDRIVER_HEADLESS=1 yarn run test --exclude '_build/test/server/**/*'
+        if: contains(matrix.tests, ':nbrowser')
+        run: |
+          export TEST_SPLITS=$(echo $TESTS | sed "s/.*:nbrowser-//" | sed "s/:.*//")
+          MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:nbrowser
+        env:
+          TESTS: ${{ matrix.tests }}
 
       - name: Update candidate branch
         # OH, this needs work, as a follow-up job
