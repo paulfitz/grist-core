@@ -1973,8 +1973,9 @@ export class ActiveDoc extends EventEmitter {
       }
       documentSettings.engine = (pythonVersion === '2') ? 'python2' : 'python3';
     }
+    console.log("_Grist_DocInfo", {timezone, documentSettings});
     await this.docStorage.run('UPDATE _grist_DocInfo SET timezone = ?, documentSettings = ?',
-                              [timezone, JSON.stringify(documentSettings)]);
+                              timezone, JSON.stringify(documentSettings));
   }
 
   private _makeInfo(docSession: OptDocSession, options: ApplyUAOptions = {}) {

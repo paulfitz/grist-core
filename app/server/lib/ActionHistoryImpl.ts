@@ -314,7 +314,7 @@ export class ActionHistoryImpl implements ActionHistory {
     } finally {
       if (tip) {
         await this._db.run(`UPDATE _gristsys_ActionHistoryBranch SET actionRef = ?
-                              WHERE name = "local_sent"`,
+                              WHERE name = 'local_sent'`,
                            tip);
       }
     }
@@ -336,7 +336,7 @@ export class ActionHistoryImpl implements ActionHistory {
       }
     }
     await this._db.run(`UPDATE _gristsys_ActionHistoryBranch SET actionRef = ?
-                          WHERE name = "shared"`,
+                          WHERE name = 'shared'`,
                        candidate.id);
     if (candidates.length === 1) {
       this._haveLocalSent = false;
@@ -516,7 +516,7 @@ export class ActionHistoryImpl implements ActionHistory {
                                        FROM _gristsys_ActionHistoryBranch as Branch
                                        LEFT JOIN _gristsys_ActionHistory as History
                                          ON History.id = Branch.actionRef
-                                       WHERE name in ("shared", "local_sent", "local_unsent")`);
+                                       WHERE name in ('shared', 'local_sent', 'local_unsent')`);
     const bits = mapValues(keyBy(rows, 'name'), this._asActionIdentifiers);
     const missing = { actionHash: null, actionRef: null, actionNum: null } as ActionIdentifiers;
     return {

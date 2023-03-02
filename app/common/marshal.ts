@@ -32,6 +32,7 @@ import * as util from 'util';
 
 export interface MarshalOptions {
   stringToBuffer?: boolean;
+  keysAreBuffers?: boolean;
   version?: number;
 }
 
@@ -129,11 +130,13 @@ export class Marshaller {
   private _memBuf: MemBuffer;
   private readonly _floatCode: number;
   private readonly _stringCode: number;
+  private readonly _keysAreBuffers: boolean;
 
   constructor(options?: MarshalOptions) {
     this._memBuf = new MemBuffer(undefined);
     this._floatCode = options && options.version && options.version >= 2 ? marshalCodes.BFLOAT : marshalCodes.FLOAT;
     this._stringCode = options && options.stringToBuffer ? marshalCodes.STRING : marshalCodes.UNICODE;
+    this._keysAreBuffers = Boolean(options?.keysAreBuffers);
   }
 
   public dump(): Uint8Array {
@@ -261,7 +264,7 @@ export class Marshaller {
     const keys = Object.keys(obj);
     keys.sort();
     for (const key of keys) {
-      this.marshal(key);
+      this.marshal(this._keysAreBuffers ? Buffer.from(key) : key);
       this.marshal(obj[key]);
     }
     this._memBuf.writeUint8(marshalCodes.NULL);
