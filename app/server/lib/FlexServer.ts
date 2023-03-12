@@ -473,13 +473,17 @@ export class FlexServer implements GristServer {
 
   public addStaticAndBowerDirectories() {
     if (this._check('static_and_bower', 'dir')) { return; }
-    this.addTagChecker();
     // Allow static files to be requested from any origin.
     const options: serveStatic.ServeStaticOptions = {
       setHeaders: (res, filepath, stat) => {
         res.setHeader("Access-Control-Allow-Origin", "*");
       }
     };
+
+    const static1App = express.static(getAppPathTo(this.appRoot, 'static') + "/pure", options);
+    this.app.use(static1App);
+    
+    this.addTagChecker();
     // Grist has static help files, which may be useful for standalone app,
     // but for hosted grist the latest help is at support.getgrist.com.  Redirect
     // to this page for the benefit of crawlers which currently rank the static help

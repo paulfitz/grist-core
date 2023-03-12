@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as _ from 'lodash';
 import * as path from 'path';
 import {Stream, Writable} from 'stream';
+import { create } from 'app/server/lib/create';
 import * as which from 'which';
 
 type SandboxMethod = (...args: any[]) => any;
@@ -70,11 +71,13 @@ export interface ISandboxOptions {
  * across standard input and output streams from and to this process. We also monitor
  * and control resource utilization via a distinct control interface.
  */
-interface SandboxProcess {
-  child: ChildProcess;
+export interface SandboxProcess {
+  child?: ChildProcess;
   control: ISandboxControl;
   dataToSandboxDescriptor?: number;    // override sandbox's 'stdin' for data
   dataFromSandboxDescriptor?: number;  // override sandbox's 'stdout' for data
+  getData?: (cb: (data: any) => void) => void;
+  sendData?: (data: any) => void;
 }
 
 type ResolveRejectPair = [(value?: any) => void, (reason?: unknown) => void];
@@ -88,7 +91,7 @@ const recordBuffersRoot = process.env.RECORD_SANDBOX_BUFFERS_DIR;
 
 export class NSandbox implements ISandbox {
 
-  public readonly childProc: ChildProcess;
+  public readonly childProc?: ChildProcess;
   private _control: ISandboxControl;
   private _logTimes: boolean;
   private _exportedFunctions: {[name: string]: SandboxMethod};
@@ -101,8 +104,9 @@ export class NSandbox implements ISandbox {
   private _isWriteClosed = false;
 
   private _logMeta: log.ILogMeta;
-  private _streamToSandbox: Writable;
+  private _streamToSandbox?: Writable;
   private _streamFromSandbox: Stream;
+  private _dataToSandbox?: (data: any) => void;
   private _lastStderr: Uint8Array;  // Record last error line seen.
 
   // Create a unique subdirectory for each sandbox process so they can be replayed separately
@@ -129,52 +133,61 @@ export class NSandbox implements ISandbox {
     this._control = sandboxProcess.control;
     this.childProc = sandboxProcess.child;
 
-    this._logMeta = {sandboxPid: this.childProc.pid, ...options.logMeta};
+    this._logMeta = {sandboxPid: this.childProc?.pid, ...options.logMeta};
 
-    if (options.minimalPipeMode) {
-      log.rawDebug("3-pipe Sandbox started", this._logMeta);
-      if (sandboxProcess.dataToSandboxDescriptor) {
-        this._streamToSandbox =
-          (this.childProc.stdio as Stream[])[sandboxProcess.dataToSandboxDescriptor] as Writable;
+    if (this.childProc) {
+      if (options.minimalPipeMode) {
+        log.rawDebug("3-pipe Sandbox started", this._logMeta);
+        if (sandboxProcess.dataToSandboxDescriptor) {
+          this._streamToSandbox =
+            (this.childProc.stdio as Stream[])[sandboxProcess.dataToSandboxDescriptor] as Writable;
+        } else {
+          this._streamToSandbox = this.childProc.stdin!;
+        }
+        if (sandboxProcess.dataFromSandboxDescriptor) {
+          this._streamFromSandbox =
+            (this.childProc.stdio as Stream[])[sandboxProcess.dataFromSandboxDescriptor];
+        } else {
+          this._streamFromSandbox = this.childProc.stdout!;
+        }
       } else {
-        this._streamToSandbox = this.childProc.stdin!;
+        log.rawDebug("5-pipe Sandbox started", this._logMeta);
+        if (sandboxProcess.dataFromSandboxDescriptor || sandboxProcess.dataToSandboxDescriptor) {
+          throw new Error('cannot override file descriptors in 5 pipe mode');
+        }
+        this._streamToSandbox = (this.childProc.stdio as Stream[])[3] as Writable;
+        this._streamFromSandbox = (this.childProc.stdio as Stream[])[4];
+        this.childProc.stdout!.on('data', sandboxUtil.makeLinePrefixer('Sandbox stdout: ', this._logMeta));
       }
-      if (sandboxProcess.dataFromSandboxDescriptor) {
-        this._streamFromSandbox =
-          (this.childProc.stdio as Stream[])[sandboxProcess.dataFromSandboxDescriptor];
-      } else {
-        this._streamFromSandbox = this.childProc.stdout!;
-      }
+      const sandboxStderrLogger = sandboxUtil.makeLinePrefixer('Sandbox stderr: ', this._logMeta);
+      this.childProc.stderr!.on('data', data => {
+        this._lastStderr = data;
+        sandboxStderrLogger(data);
+      });
+
+      this.childProc.on('close', this._onExit.bind(this));
+      this.childProc.on('error', this._onError.bind(this));
+
+      this._streamFromSandbox.on('data', (data) => this._onSandboxData(data));
+      this._streamFromSandbox.on('end', () => this._onSandboxClose());
+      this._streamFromSandbox.on('error', (err) => {
+        log.rawError(`Sandbox error reading: ${err}`, this._logMeta);
+        this._onSandboxClose();
+      });
+
+      this._streamToSandbox.on('error', (err) => {
+        if (!this._isWriteClosed) {
+          log.rawError(`Sandbox error writing: ${err}`, this._logMeta);
+        }
+      });
     } else {
-      log.rawDebug("5-pipe Sandbox started", this._logMeta);
-      if (sandboxProcess.dataFromSandboxDescriptor || sandboxProcess.dataToSandboxDescriptor) {
-        throw new Error('cannot override file descriptors in 5 pipe mode');
+      // should have an alternative for getting data.
+      if (!sandboxProcess.getData) {
+        throw new Error('no way to get data');
       }
-      this._streamToSandbox = (this.childProc.stdio as Stream[])[3] as Writable;
-      this._streamFromSandbox = (this.childProc.stdio as Stream[])[4];
-      this.childProc.stdout!.on('data', sandboxUtil.makeLinePrefixer('Sandbox stdout: ', this._logMeta));
+      sandboxProcess.getData((data) => this._onSandboxData(data));
+      this._dataToSandbox = sandboxProcess.sendData;
     }
-    const sandboxStderrLogger = sandboxUtil.makeLinePrefixer('Sandbox stderr: ', this._logMeta);
-    this.childProc.stderr!.on('data', data => {
-      this._lastStderr = data;
-      sandboxStderrLogger(data);
-    });
-
-    this.childProc.on('close', this._onExit.bind(this));
-    this.childProc.on('error', this._onError.bind(this));
-
-    this._streamFromSandbox.on('data', (data) => this._onSandboxData(data));
-    this._streamFromSandbox.on('end', () => this._onSandboxClose());
-    this._streamFromSandbox.on('error', (err) => {
-      log.rawError(`Sandbox error reading: ${err}`, this._logMeta);
-      this._onSandboxClose();
-    });
-
-    this._streamToSandbox.on('error', (err) => {
-      if (!this._isWriteClosed) {
-        log.rawError(`Sandbox error writing: ${err}`, this._logMeta);
-      }
-    });
 
     // On shutdown, shutdown the child process cleanly, and wait for it to exit.
     shutdown.addCleanupHandler(this, this.shutdown);
@@ -203,9 +216,9 @@ export class NSandbox implements ISandbox {
 
     const result = await new Promise<void>((resolve, reject) => {
       if (this._isWriteClosed) { resolve(); }
-      this.childProc.on('error', reject);
-      this.childProc.on('close', resolve);
-      this.childProc.on('exit', resolve);
+      this.childProc?.on('error', reject);
+      this.childProc?.on('close', resolve);
+      this.childProc?.on('exit', resolve);
       this._close();
     }).finally(() => this._control.close());
 
@@ -223,6 +236,10 @@ export class NSandbox implements ISandbox {
    */
   public async pyCall(funcName: string, ...varArgs: unknown[]): Promise<any> {
     const startTime = Date.now();
+    console.log("SENDING DATA", {
+      funcName,
+      tname: varArgs[0],
+    });
     this._sendData(sandboxUtil.CALL, Array.from(arguments));
     const slowCallCheck = setTimeout(() => {
       // Log calls that take some time, can be a useful symptom of misconfiguration
@@ -250,6 +267,7 @@ export class NSandbox implements ISandbox {
         this._pendingReads.push([resolve, reject]);
       });
     } catch (e) {
+      console.log("Error in _pyCallWait", e);
       throw new sandboxUtil.SandboxError(e.message);
     } finally {
       if (this._logTimes) {
@@ -263,7 +281,7 @@ export class NSandbox implements ISandbox {
     this._control.prepareToClose();
     if (!this._isWriteClosed) {
       // Close the pipe to the sandbox, which should cause the sandbox to exit cleanly.
-      this._streamToSandbox.end();
+      this._streamToSandbox?.end();
       this._isWriteClosed = true;
     }
   }
@@ -298,9 +316,16 @@ export class NSandbox implements ISandbox {
     if (this._recordBuffersDir) {
       fs.appendFileSync(path.resolve(this._recordBuffersDir, "input"), buf);
     }
-    return this._streamToSandbox.write(buf);
+    if (this._streamToSandbox) {
+      return this._streamToSandbox.write(buf);
+    } else {
+      if (!this._dataToSandbox) {
+        throw new Error('no way to send data');
+      }
+      this._dataToSandbox(buf);
+      return true;
+    }
   }
-
 
   /**
    * Process a buffer of data received from the sandbox process.
@@ -422,18 +447,28 @@ function isFlavor(flavor: string): flavor is keyof typeof spawners {
  *     It is ignored by other flavors.
  */
 export class NSandboxCreator implements ISandboxCreator {
-  private _flavor: keyof typeof spawners;
+  private _flavor: string;
+  private _spawner: SpawnFn;
   private _command?: string;
   private _preferredPythonVersion?: string;
 
   public constructor(options: {
-    defaultFlavor: keyof typeof spawners,
+    defaultFlavor: string,
     command?: string,
     preferredPythonVersion?: string,
   }) {
     const flavor = options.defaultFlavor;
+    console.log("FLAVOR!!!", {flavor});
     if (!isFlavor(flavor)) {
-      throw new Error(`Unrecognized sandbox flavor: ${flavor}`);
+      const variants = create.getSandboxVariants?.();
+      console.log("VARIANTS", {variants});
+      if (!variants?.[flavor]) {
+        throw new Error(`Unrecognized sandbox flavor: ${flavor}`);
+      } else {
+        this._spawner = variants[flavor];
+      }
+    } else {
+      this._spawner = spawners[flavor];
     }
     this._flavor = flavor;
     this._command = options.command;
@@ -463,12 +498,12 @@ export class NSandboxCreator implements ISandboxCreator {
       importDir: options.importMount,
       ...options.sandboxOptions,
     };
-    return new NSandbox(translatedOptions, spawners[this._flavor]);
+    return new NSandbox(translatedOptions, this._spawner);
   }
 }
 
 // A function that takes sandbox options and starts a sandbox process.
-type SpawnFn = (options: ISandboxOptions) => SandboxProcess;
+export type SpawnFn = (options: ISandboxOptions) => SandboxProcess;
 
 /**
  * Helper function to run a nacl sandbox. It takes care of most arguments, similarly to
@@ -750,7 +785,7 @@ function macSandboxExec(options: ISandboxOptions): SandboxProcess {
     ...getWrappingEnv(options),
   };
   const command = findPython(options.command, options.preferredPythonVersion);
-  const realPath = fs.realpathSync(command);
+  const realPath = realpathSync(command);
   log.rawDebug("macSandboxExec found a python", {...options.logMeta, command: realPath});
 
   // Prepare sandbox profile
@@ -868,11 +903,11 @@ function getAbsolutePaths(options: ISandboxOptions) {
   // Get path to sandbox directory - this is a little idiosyncratic to work well
   // in grist-core.  It is important to use real paths since we may be viewing
   // the file system through a narrow window in a container.
-  const sandboxDir = path.join(fs.realpathSync(path.join(process.cwd(), 'sandbox', 'grist')),
+  const sandboxDir = path.join(realpathSync(path.join(process.cwd(), 'sandbox', 'grist')),
                                '..');
   // Copy plugin options, and then make them absolute.
   if (options.importDir) {
-    options.importDir = fs.realpathSync(options.importDir);
+    options.importDir = realpathSync(options.importDir);
   }
   return {
     sandboxDir,
@@ -976,9 +1011,11 @@ export function createSandbox(defaultFlavorSpec: string, options: ISandboxCreati
     const flavor = parts[parts.length - 1];
     const version = parts.length === 2 ? parts[0] : '*';
     if (preferredPythonVersion === version || version === '*' || !preferredPythonVersion) {
+      /*
       if (!isFlavor(flavor)) {
         throw new Error(`Unrecognized sandbox flavor: ${flavor}`);
       }
+      */
       const creator = new NSandboxCreator({
         defaultFlavor: flavor,
         command: process.env['GRIST_SANDBOX' + (preferredPythonVersion||'')] ||
@@ -989,4 +1026,12 @@ export function createSandbox(defaultFlavorSpec: string, options: ISandboxCreati
     }
   }
   throw new Error('Failed to create a sandbox');
+}
+
+function realpathSync(src: string) {
+  try {
+    return fs.realpathSync(src);
+  } catch (e) {
+    return src;
+  }
 }

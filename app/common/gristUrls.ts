@@ -293,6 +293,9 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
  * Parse a URL location into an IGristUrlState object. See encodeUrl() documentation.
  */
 export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Location | URL): IGristUrlState {
+  if ((window as any).fakeUrl) {
+    location = new URL((window as any).fakeUrl);
+  }
   const parts = location.pathname.slice(1).split('/');
   const map = new Map<string, string>();
   for (let i = 0; i < parts.length; i += 2) {
