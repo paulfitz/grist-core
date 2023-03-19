@@ -270,8 +270,17 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
     }
   }
   const queryStr = encodeQueryParams(queryParams);
-  url.pathname = parts.join('');
-  url.search = queryStr;
+
+  if ((window as any).fakeUrl) {
+    const at = new URL(location.href);
+    at.searchParams.set('part',
+                        parts.join(''));
+    // don't deal with queryStr yet.
+    url.href = at.href;
+  } else {
+    url.pathname = parts.join('');
+    url.search = queryStr;
+  }
   if (state.hash) {
     // Project tests use hashes, so only set hash if there is an anchor.
     url.hash = hashParts.join('.');
@@ -294,7 +303,10 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
  */
 export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Location | URL): IGristUrlState {
   if ((window as any).fakeUrl) {
-    location = new URL((window as any).fakeUrl);
+    const at = new URL(location.href);
+    const extra = at.searchParams.get('part');
+    location = new URL((window as any).fakeUrl + (extra || ''));
+    location.hash = at.hash;
   }
   const parts = location.pathname.slice(1).split('/');
   const map = new Map<string, string>();
