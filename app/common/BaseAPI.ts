@@ -58,7 +58,7 @@ export class BaseAPI {
   private _extraParameters?: Map<string, string>;
 
   constructor(options: IOptions = {}) {
-    this.fetch = options.fetch || tbind(window.fetch, window);
+    this.fetch = options.fetch || tbind((window as any).fetchHook || window.fetch, window);
     this.newFormData = options.newFormData || (() => new FormData());
     this._logger = options.logger || console;
     this._headers = {
