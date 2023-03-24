@@ -405,9 +405,10 @@ export class ActionHistoryImpl implements ActionHistory {
   }
 
   public async getActions(actionNums: number[]): Promise<Array<LocalActionBundle|undefined>> {
-    const actions = await this._db.all(`SELECT actionHash, actionNum, body FROM _gristsys_ActionHistory
-                                         where actionNum in (${actionNums.map(x => '?').join(',')})`,
-                                       actionNums);
+    const actions = await this._db.all(
+      `SELECT actionHash, actionNum, body FROM _gristsys_ActionHistory
+       where actionNum in (${actionNums.map(x => '?').join(',')})`,
+      ...actionNums);
     return reportTimeTaken("getActions", () => {
       const actionsByActionNum = keyBy(actions, 'actionNum');
       return actionNums
