@@ -1459,8 +1459,7 @@ export class ActiveDoc extends EventEmitter {
    */
   public async getUsersForViewAs(docSession: OptDocSession): Promise<PermissionDataWithExtraUsers> {
     // Make sure we have rights to view access rules.
-    const db = this.getHomeDbManager();
-    if (!db || !await this._granularAccess.hasAccessRulesPermission(docSession)) {
+    if (!await this._granularAccess.hasAccessRulesPermission(docSession)) {
       throw new Error('Cannot list ACL users');
     }
 
@@ -1475,12 +1474,15 @@ export class ActiveDoc extends EventEmitter {
     // Collect users the document is shared with.
     const userId = getDocSessionUserId(docSession);
     if (!userId) { throw new Error('Cannot determine user'); }
-    const access = db.unwrapQueryResult(
-      await db.getDocAccess({userId, urlId: this.docName}, {
-        flatten: true, excludeUsersWithoutAccess: true,
-      }));
-    result.users = access.users;
-    result.users.forEach(user => isShared.add(normalizeEmail(user.email)));
+    const db = this.getHomeDbManager();
+    if (db) {
+      const access = db.unwrapQueryResult(
+        await db.getDocAccess({userId, urlId: this.docName}, {
+          flatten: true, excludeUsersWithoutAccess: true,
+        }));
+      result.users = access.users;
+      result.users.forEach(user => isShared.add(normalizeEmail(user.email)));
+    }
 
     // Collect users from user attribute tables. Omit duplicates with users the document is
     // shared with.
