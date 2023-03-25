@@ -34,7 +34,7 @@ export async function setupLocale() {
     // Detect what is resolved languages to load.
     const languages = i18next.languages;
     // Fetch all json files (all of which should be already preloaded);
-    const loadPath = `${document.baseURI}locales/{{lng}}.{{ns}}.json`;
+    const loadPath = `${(window as any).bootstrapGristPrefix || document.baseURI}locales/{{lng}}.{{ns}}.json`;
     const pathsToLoad: Promise<any>[] = [];
     async function load(lang: string, n: string) {
       const resourceUrl = loadPath.replace('{{lng}}', lang.replace("-", "_")).replace('{{ns}}', n);
