@@ -274,8 +274,21 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
   if ((window as any).fakeUrl) {
     const at = new URL(location.href);
     at.search = queryStr;
-    at.searchParams.set('part',
-                        parts.join(''));
+    if (parts[0] === '/') {
+      parts.shift();
+    }
+    if (parts[0] === 'o/docs/') {
+      parts.shift();
+    }
+    if (parts[0]?.startsWith('doc/')) {
+      parts.shift();
+    }
+    if (parts.length === 1 && parts[0].startsWith('/p/')) {
+      at.searchParams.set('p', parts[0].slice(3));
+    } else {
+      at.searchParams.set('part',
+                          parts.join(''));
+    }
     url.href = at.href;
   } else {
     url.pathname = parts.join('');
@@ -304,7 +317,13 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
 export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Location | URL): IGristUrlState {
   if ((window as any).fakeUrl) {
     const at = new URL(location.href);
-    const extra = at.searchParams.get('part');
+    let extra = at.searchParams.get('part');
+    if (!extra) {
+      const p = at.searchParams.get('p');
+      if (p) {
+        extra = `/p/${p}`;
+      }
+    }
     location = new URL((window as any).fakeUrl + (extra || ''));
     location.search = at.search;
     location.hash = at.hash;
