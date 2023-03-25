@@ -273,9 +273,9 @@ export function encodeUrl(gristConfig: Partial<GristLoadConfig>,
 
   if ((window as any).fakeUrl) {
     const at = new URL(location.href);
+    at.search = queryStr;
     at.searchParams.set('part',
                         parts.join(''));
-    // don't deal with queryStr yet.
     url.href = at.href;
   } else {
     url.pathname = parts.join('');
@@ -306,6 +306,7 @@ export function decodeUrl(gristConfig: Partial<GristLoadConfig>, location: Locat
     const at = new URL(location.href);
     const extra = at.searchParams.get('part');
     location = new URL((window as any).fakeUrl + (extra || ''));
+    location.search = at.search;
     location.hash = at.hash;
   }
   const parts = location.pathname.slice(1).split('/');
