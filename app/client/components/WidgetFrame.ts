@@ -157,6 +157,7 @@ export class WidgetFrame extends DisposableWithEvents {
     return onElem(
       (this._iframe = dom('iframe', dom.cls('clipboard_focus'), dom.cls('custom_view'), {
         src: fullUrl,
+        credentialless: true,
       }))
     );
   }
