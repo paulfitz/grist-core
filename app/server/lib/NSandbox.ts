@@ -3,6 +3,7 @@
  */
 import {arrayToString} from 'app/common/arrayToString';
 import * as marshal from 'app/common/marshal';
+import {create} from 'app/server/lib/create';
 import {ISandbox, ISandboxCreationOptions, ISandboxCreator} from 'app/server/lib/ISandbox';
 import log from 'app/server/lib/log';
 import {getAppRoot, getAppRootFor, getUnpackedAppRoot} from 'app/server/lib/places';
@@ -20,7 +21,6 @@ import * as fs from 'fs';
 import * as _ from 'lodash';
 import * as path from 'path';
 import {Stream, Writable} from 'stream';
-import { create } from 'app/server/lib/create';
 import * as which from 'which';
 
 type SandboxMethod = (...args: any[]) => any;
@@ -70,14 +70,18 @@ export interface ISandboxOptions {
  * We interact with sandboxes as a separate child process. Data engine work is done
  * across standard input and output streams from and to this process. We also monitor
  * and control resource utilization via a distinct control interface.
+ *
+ * More recently, a sandbox may not be a separate OS process, but (for
+ * example) a web worker. In this case, a pair of callbacks (getData and
+ * sendData) replace pipes.
  */
 export interface SandboxProcess {
   child?: ChildProcess;
   control: ISandboxControl;
   dataToSandboxDescriptor?: number;    // override sandbox's 'stdin' for data
   dataFromSandboxDescriptor?: number;  // override sandbox's 'stdout' for data
-  getData?: (cb: (data: any) => void) => void;
-  sendData?: (data: any) => void;
+  getData?: (cb: (data: any) => void) => void;  // use a callback instead of a pipe to get data
+  sendData?: (data: any) => void;  // use a callback instead of a pipe to send data
 }
 
 type ResolveRejectPair = [(value?: any) => void, (reason?: unknown) => void];
@@ -181,9 +185,13 @@ export class NSandbox implements ISandbox {
         }
       });
     } else {
-      // should have an alternative for getting data.
+      // No child process. In this case, there should be a callback for
+      // receiving and sending data.
       if (!sandboxProcess.getData) {
-        throw new Error('no way to get data');
+        throw new Error('no way to get data from sandbox');
+      }
+      if (!sandboxProcess.sendData) {
+        throw new Error('no way to send data to sandbox');
       }
       sandboxProcess.getData((data) => this._onSandboxData(data));
       this._dataToSandbox = sandboxProcess.sendData;
@@ -236,10 +244,6 @@ export class NSandbox implements ISandbox {
    */
   public async pyCall(funcName: string, ...varArgs: unknown[]): Promise<any> {
     const startTime = Date.now();
-    console.log("SENDING DATA", {
-      funcName,
-      tname: varArgs[0],
-    });
     this._sendData(sandboxUtil.CALL, Array.from(arguments));
     const slowCallCheck = setTimeout(() => {
       // Log calls that take some time, can be a useful symptom of misconfiguration
@@ -267,7 +271,6 @@ export class NSandbox implements ISandbox {
         this._pendingReads.push([resolve, reject]);
       });
     } catch (e) {
-      console.log("Error in _pyCallWait", e);
       throw new sandboxUtil.SandboxError(e.message);
     } finally {
       if (this._logTimes) {
@@ -320,7 +323,7 @@ export class NSandbox implements ISandbox {
       return this._streamToSandbox.write(buf);
     } else {
       if (!this._dataToSandbox) {
-        throw new Error('no way to send data');
+        throw new Error('no way to send data to sandbox');
       }
       this._dataToSandbox(buf);
       return true;
@@ -458,10 +461,8 @@ export class NSandboxCreator implements ISandboxCreator {
     preferredPythonVersion?: string,
   }) {
     const flavor = options.defaultFlavor;
-    console.log("FLAVOR!!!", {flavor});
     if (!isFlavor(flavor)) {
       const variants = create.getSandboxVariants?.();
-      console.log("VARIANTS", {variants});
       if (!variants?.[flavor]) {
         throw new Error(`Unrecognized sandbox flavor: ${flavor}`);
       } else {
@@ -1011,11 +1012,6 @@ export function createSandbox(defaultFlavorSpec: string, options: ISandboxCreati
     const flavor = parts[parts.length - 1];
     const version = parts.length === 2 ? parts[0] : '*';
     if (preferredPythonVersion === version || version === '*' || !preferredPythonVersion) {
-      /*
-      if (!isFlavor(flavor)) {
-        throw new Error(`Unrecognized sandbox flavor: ${flavor}`);
-      }
-      */
       const creator = new NSandboxCreator({
         defaultFlavor: flavor,
         command: process.env['GRIST_SANDBOX' + (preferredPythonVersion||'')] ||
@@ -1028,6 +1024,11 @@ export function createSandbox(defaultFlavorSpec: string, options: ISandboxCreati
   throw new Error('Failed to create a sandbox');
 }
 
+/**
+ * The realpath function may not be available, just return the
+ * path unchanged if it is not. Specifically, this happens when
+ * compiled for use in a browser environment.
+ */
 function realpathSync(src: string) {
   try {
     return fs.realpathSync(src);

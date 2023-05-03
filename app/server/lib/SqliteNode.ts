@@ -1,9 +1,8 @@
 import * as sqlite3 from '@gristlabs/sqlite3';
-import { MinDB, PreparedStatement, ResultRow, SqliteVariant } from './SqliteCommon';
-import { OpenMode, RunResult } from './SQLiteDB';
-export { sqlite3 };
-
 import {fromCallback} from 'app/server/lib/serverUtils';
+import { MinDB, PreparedStatement, ResultRow, SqliteVariant } from 'app/server/lib/SqliteCommon';
+import { OpenMode, RunResult } from 'app/server/lib/SQLiteDB';
+export { sqlite3 };
 
 export class NodeSqliteVariant implements SqliteVariant {
   opener(dbPath: string, mode: OpenMode): Promise<MinDB> {
@@ -24,10 +23,11 @@ export class NodeSqlite3PreparedStatement implements PreparedStatement {
   }
 
   public columns(): string[] {
+    // This method is only needed if marshalling is not built in -
+    // and node-sqlite3 has marshalling built in.
     throw new Error('not available (but should not be needed)');
   }
 }
-
 
 export class NodeSqlite3DatabaseAdapter implements MinDB {
   public static async opener(dbPath: string, mode: OpenMode): Promise<any> {
@@ -98,7 +98,7 @@ export class NodeSqlite3DatabaseAdapter implements MinDB {
 
   public async limitAttach(maxAttach: number) {
     const SQLITE_LIMIT_ATTACHED = (sqlite3 as any).LIMIT_ATTACHED;
-    // Cast because tpyes out of date.
+    // Cast because types out of date.
     (this._db as any).configure('limit', SQLITE_LIMIT_ATTACHED, maxAttach);
   }
 }

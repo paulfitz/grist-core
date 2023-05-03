@@ -9,6 +9,8 @@ if [[ -e ext/app ]]; then
 fi
 WEBPACK_CONFIG=buildtools/webpack.config.js
 if [[ -e ext/buildtools/webpack.config.js ]]; then
+  # Allow webpack config file to be replaced (useful
+  # for grist-static)
   WEBPACK_CONFIG=ext/buildtools/webpack.config.js
 fi
 

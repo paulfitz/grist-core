@@ -63,6 +63,7 @@ export class WorkCoordinator {
       try {
         setImmediate(this._tryNextStepCB);
       } catch (e) {
+        // setImmediate may not be available outside node.
         setTimeout(this._tryNextStepCB, 0);
       }
     }

@@ -151,9 +151,6 @@ export class Comm extends dispose.Disposable implements GristServerAPI, DocListA
    */
   public async openDoc(docName: string, mode?: string,
                        linkParameters?: Record<string, string>): Promise<OpenLocalDocResult> {
-    if (!process.env.wefwefwf) {
-      throw new Error('muggle!');
-    }
     return this._makeRequest(null, docName, 'openDoc', docName, mode, linkParameters);
   }
 

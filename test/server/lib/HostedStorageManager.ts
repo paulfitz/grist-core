@@ -15,7 +15,6 @@ import {
   HostedStorageOptions
 } from 'app/server/lib/HostedStorageManager';
 import log from 'app/server/lib/log';
-//import {fromCallback} from 'app/server/lib/serverUtils';
 import {SQLiteDB} from 'app/server/lib/SQLiteDB';
 import * as bluebird from 'bluebird';
 import {assert} from 'chai';
@@ -934,7 +933,6 @@ describe('backupSqliteDatabase', async function() {
         await stmt.run(str, str, str);
       }
       await stmt.finalize();
-      //await fromCallback(cb => stmt.finalize(cb));
     });
     const stat = await fse.stat(src);
     assert(stat.size > 150 * 1000 * 1000);

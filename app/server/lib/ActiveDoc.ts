@@ -146,7 +146,7 @@ const DEFAULT_LOCALE = process.env.GRIST_DEFAULT_LOCALE || "en-US";
 // Number of seconds an ActiveDoc is retained without any clients.
 // In dev environment, it is convenient to keep this low for quick tests.
 // In production, it is reasonable to stretch it out a bit.
-const ACTIVEDOC_TIMEOUT = 6000; // (process.env.NODE_ENV === 'production') ? 30 : 5;
+const ACTIVEDOC_TIMEOUT = (process.env.NODE_ENV === 'production') ? 30 : 5;
 
 // We'll wait this long between re-measuring sandbox memory.
 const MEMORY_MEASUREMENT_INTERVAL_MS = 60 * 1000;
@@ -158,7 +158,10 @@ const UPDATE_CURRENT_TIME_DELAY = {delayMs: 60 * 60 * 1000, varianceMs: 30 * 100
 const UPDATE_DATA_SIZE_DELAY = {delayMs: 5 * 60 * 1000, varianceMs: 30 * 1000};
 
 // A hook for dependency injection.
-export const Deps = {ACTIVEDOC_TIMEOUT};
+export const Deps = {
+  ACTIVEDOC_TIMEOUT,
+  ACTIVEDOC_TIMEOUT_ACTION: 'shutdown' as 'shutdown'|'ignore',
+};
 
 interface UpdateUsageOptions {
   // Whether usage should be synced to the home database. Defaults to true.
@@ -227,7 +230,7 @@ export class ActiveDoc extends EventEmitter {
   private _redisSubscriber?: RedisClient;
 
   // Timer for shutting down the ActiveDoc a bit after all clients are gone.
-  private _inactivityTimer = new InactivityTimer(() => this.shutdown(), Deps.ACTIVEDOC_TIMEOUT * 1000);
+  private _inactivityTimer = new InactivityTimer(() => this._onInactive(), Deps.ACTIVEDOC_TIMEOUT * 1000);
   private _recoveryMode: boolean = false;
   private _shuttingDown: boolean = false;
   private _afterShutdownCallback?: () => Promise<void>;
@@ -1975,7 +1978,6 @@ export class ActiveDoc extends EventEmitter {
       }
       documentSettings.engine = (pythonVersion === '2') ? 'python2' : 'python3';
     }
-    console.log("_Grist_DocInfo", {timezone, documentSettings});
     await this.docStorage.run('UPDATE _grist_DocInfo SET timezone = ?, documentSettings = ?',
                               timezone, JSON.stringify(documentSettings));
   }
@@ -2423,6 +2425,12 @@ export class ActiveDoc extends EventEmitter {
       this._attachmentColumns = getAttachmentColumns(this.docData);
     }
     return this._attachmentColumns;
+  }
+
+  private async _onInactive() {
+    if (Deps.ACTIVEDOC_TIMEOUT_ACTION === 'shutdown') {
+      await this.shutdown();
+    }
   }
 }
 

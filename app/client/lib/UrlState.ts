@@ -60,10 +60,6 @@ export class UrlState<IUrlState extends object> extends Disposable {
    */
   public async pushUrl(urlState: IUrlState|UpdateFunc<IUrlState>,
                        options: {replace?: boolean, avoidReload?: boolean} = {}) {
-    //if (!process.env.wefwefw) {
-    ///console.log("SKIP PUSHURL");
-    //return;
-    //}
     const prevState = this.state.get();
     const newState = this._mergeState(prevState, urlState);
 

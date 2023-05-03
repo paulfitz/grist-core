@@ -1,4 +1,3 @@
-//import { delay } from 'app/common/delay';
 import { BulkColValues, TableColValues, TableDataAction, toTableDataAction } from 'app/common/DocActions';
 
 import fromPairs = require('lodash/fromPairs');

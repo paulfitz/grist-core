@@ -7,7 +7,7 @@ import {IBilling} from 'app/server/lib/IBilling';
 import {INotifier} from 'app/server/lib/INotifier';
 import {ISandbox, ISandboxCreationOptions} from 'app/server/lib/ISandbox';
 import {IShell} from 'app/server/lib/IShell';
-import { createSandbox, SpawnFn } from 'app/server/lib/NSandbox';
+import {createSandbox, SpawnFn} from 'app/server/lib/NSandbox';
 import {SqliteVariant} from 'app/server/lib/SqliteCommon';
 
 export interface ICreate {

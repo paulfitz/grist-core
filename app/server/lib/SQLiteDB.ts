@@ -69,9 +69,12 @@
 
 import {ErrorWithCode} from 'app/common/ErrorWithCode';
 import {timeFormat} from 'app/common/timeFormat';
+import {create} from 'app/server/lib/create';
 import * as docUtils from 'app/server/lib/docUtils';
 import log from 'app/server/lib/log';
-
+import {MinDB, MinRunResult, PreparedStatement, ResultRow,
+        SqliteVariant, Statement} from 'app/server/lib/SqliteCommon';
+import {NodeSqliteVariant} from 'app/server/lib/SqliteNode';
 import assert from 'assert';
 import * as fse from 'fs-extra';
 import fromPairs = require('lodash/fromPairs');
@@ -79,21 +82,12 @@ import isEqual = require('lodash/isEqual');
 import noop = require('lodash/noop');
 import range = require('lodash/range');
 
-import { NodeSqliteVariant } from 'app/server/lib/SqliteNode';
-import { create } from 'app/server/lib/create';
-
-import { SqliteVariant, Statement } from 'app/server/lib/SqliteCommon';
-export type { Statement };
-import { MinDB, MinRunResult, PreparedStatement, ResultRow } from 'app/server/lib/SqliteCommon';
-export type { PreparedStatement, ResultRow };
-
+export type {PreparedStatement, ResultRow, Statement};
 export type RunResult = MinRunResult;
-// export type Statement = xsqlite3.Statement;
 
 function getVariant(): SqliteVariant {
   return create.getSqliteVariant?.() || new NodeSqliteVariant();
 }
-
 
 // Describes how to create a new DB or migrate an old one. Any changes to the DB must be reflected
 // in the 'create' function, and added as new entries in the 'migrations' array. Existing
@@ -149,11 +143,6 @@ export interface ISQLiteDB {
   requestVacuum(): Promise<boolean>;
 }
 
-// type BSqlite3Database = xsqlite3.RunResult extends Thing ? xsqlite3.Database : any;
-//type NodeSqlite3Database = xsqlite3.RunResult extends Thing ? any : xsqlite3.Database;
-
-// const opener = isBetterSqlite3() ? BetterSqlite3DatabaseAdapter.opener : NodeSqlite3DatabaseAdapter.opener;
-
 /**
  * Wrapper around sqlite3.Database. This class provides many of the same methods, but promisified.
  * In addition, it offers:
@@ -208,11 +197,11 @@ export class SQLiteDB implements ISQLiteDB {
    */
   public static async openDBRaw(dbPath: string,
                                 mode: OpenMode = OpenMode.OPEN_CREATE): Promise<SQLiteDB> {
-    const thing: MinDB = await getVariant().opener(dbPath, mode);
+    const minDb: MinDB = await getVariant().opener(dbPath, mode);
     if (SQLiteDB._addOpens(dbPath, 1) > 1) {
       log.warn("SQLiteDB[%s] avoid opening same DB more than once", dbPath);
     }
-    return new SQLiteDB(thing, dbPath);
+    return new SQLiteDB(minDb, dbPath);
   }
 
   /**
@@ -556,6 +545,11 @@ export function quoteIdent(ident: string): string {
   return `"${ident}"`;
 }
 
+/**
+ * Validate and quote SQL with single quotes. BUT WHY?
+ * TODO check what the deal is, this feels wrong.
+ */
 export function quotePlain(ident: string): string {
-  return quoteIdent(ident).replace(/"/g, "'");
+  assert(/^[\w.]+$/.test(ident), `SQL identifier is not valid: ${ident}`);
+  return `'${ident}'`;
 }

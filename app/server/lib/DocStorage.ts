@@ -27,7 +27,7 @@ import * as util from 'util';
 import uuidv4 from "uuid/v4";
 import {OnDemandStorage} from './OnDemandActions';
 import {ISQLiteDB, MigrationHooks, OpenMode, PreparedStatement, quoteIdent,
-        ResultRow, RunResult, SchemaInfo, SQLiteDB} from './SQLiteDB';
+        ResultRow, RunResult, SchemaInfo, SQLiteDB} from 'app/server/lib/SQLiteDB';
 import chunk = require('lodash/chunk');
 import cloneDeep = require('lodash/cloneDeep');
 import groupBy = require('lodash/groupBy');
@@ -733,6 +733,7 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
       })
       .catch(err => {
         // This replicates previous logic for _updateMetadata.
+        // It matches errors from node-sqlite3 and better-sqlite3
         if (err.message.startsWith('SQLITE_ERROR: no such table') ||
           err.message.startsWith('no such table:')) {
           err.message = `NO_METADATA_ERROR: ${this.docName} has no metadata`;
@@ -1544,7 +1545,10 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
       );
     `).catch(e => {
       if (String(e).match(/no such table: dbstat/)) {
-        // data size not available, return NaN
+        // We are using a version of SQLite that doesn't have
+        // dbstat compiled in. But it would be sad to disable
+        // Grist entirely just because we can't track byte-count.
+        // So return NaN in this case.
         return {totalSize: NaN};
       }
       throw e;
@@ -1832,7 +1836,9 @@ export async function createAttachmentsIndex(db: ISQLiteDB) {
   await db.exec(`CREATE INDEX _grist_Attachments_fileIdent ON _grist_Attachments(fileIdent)`);
 }
 
-// Old docs may have wrong quotes in schema for default values.
+// Old docs may have incorrect quotes in their schema for default values
+// that node-sqlite3 may tolerate but not other wrappers. Patch such
+// material as we run into it.
 function fixDefault(def: string) {
   return (def === '""') ? "''" : def;
 }

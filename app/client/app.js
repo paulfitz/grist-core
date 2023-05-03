@@ -36,7 +36,6 @@ $(function() {
   localeSetup.then(() => {
     window.gristApp = App.create(null);
   }).catch(error => {
-    console.error(error);
     throw new Error(`Failed to load locale: ${error?.message || 'Unknown error'}`);
   })
   // Set from the login tests to stub and un-stub functions during execution.
