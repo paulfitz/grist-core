@@ -474,6 +474,8 @@ export interface DocAPI {
   flushWebhook(webhookId: string): Promise<void>;
 
   getAssistance(params: AssistanceRequest): Promise<AssistanceResponse>;
+  makeOffer(): Promise<void>;
+  getOffers(): Promise<any>;
 }
 
 // Operations that are supported by a doc worker.
@@ -1035,6 +1037,20 @@ export class DocAPIImpl extends BaseAPI implements DocAPI {
       method: 'POST',
       body: JSON.stringify(params),
     });
+  }
+
+  public async makeOffer() {
+    await this.requestJson(`${this._url}/offer`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  public async getOffers() {
+    const result = await this.requestJson(`${this._url}/offers`, {
+      method: 'GET',
+    });
+    return result;
   }
 
   private _getRecords(tableId: string, endpoint: 'data' | 'records', options?: GetRowsParams): Promise<any> {

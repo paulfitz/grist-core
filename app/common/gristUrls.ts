@@ -12,7 +12,7 @@ import clone = require('lodash/clone');
 import pickBy = require('lodash/pickBy');
 import {ThemeAppearance, ThemeAppearanceChecker, ThemeName, ThemeNameChecker} from './ThemePrefs';
 
-export const SpecialDocPage = StringUnion('code', 'acl', 'data', 'GristDocTour', 'settings', 'webhook');
+export const SpecialDocPage = StringUnion('code', 'acl', 'data', 'GristDocTour', 'settings', 'webhook', 'versions');
 type SpecialDocPage = typeof SpecialDocPage.type;
 export type IDocPage = number | SpecialDocPage;
 

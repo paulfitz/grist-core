@@ -1044,49 +1044,12 @@ export class DocWorkerApi {
 
     this._app.get('/api/docs/:docId/compare/:docId2', canView, withDoc(async (activeDoc, req, res) => {
       const showDetails = isAffirmative(req.query.detail);
-      const docSession = docSessionFromRequest(req);
-      const {states} = await this._getStates(docSession, activeDoc);
-      const ref = await fetch(this._grist.getHomeUrl(req, `/api/docs/${req.params.docId2}/states`), {
-        headers: {
-          ...getTransitiveHeaders(req),
-          'Content-Type': 'application/json',
-        }
+      const docId2 = req.params.docId2;
+      const comp = await this._compareDoc(req, activeDoc, {
+        showDetails,
+        docId2,
       });
-      const states2: DocState[] = (await ref.json()).states;
-      const left = states[0];
-      const right = states2[0];
-      if (!left || !right) {
-        // This should not arise unless there's a bug.
-        throw new Error('document with no history');
-      }
-      const rightHashes = new Set(states2.map(state => state.h));
-      const parent = states.find(state => rightHashes.has(state.h )) || null;
-      const leftChanged = parent && parent.h !== left.h;
-      const rightChanged = parent && parent.h !== right.h;
-      const summary = leftChanged ? (rightChanged ? 'both' : 'left') :
-        (rightChanged ? 'right' : (parent ? 'same' : 'unrelated'));
-      const comparison: DocStateComparison = {
-        left, right, parent, summary
-      };
-      if (showDetails && parent) {
-        // Calculate changes from the parent to the current version of this document.
-        const leftChanges = (await this._getChanges(docSession, activeDoc, states, parent.h,
-                                                    'HEAD')).details!.rightChanges;
-
-        // Calculate changes from the (common) parent to the current version of the other document.
-        const url = `/api/docs/${req.params.docId2}/compare?left=${parent.h}`;
-        const rightChangesReq = await fetch(this._grist.getHomeUrl(req, url), {
-          headers: {
-            ...getTransitiveHeaders(req),
-            'Content-Type': 'application/json',
-          }
-        });
-        const rightChanges = (await rightChangesReq.json()).details!.rightChanges;
-
-        // Add the left and right changes as details to the result.
-        comparison.details = { leftChanges, rightChanges };
-      }
-      res.json(comparison);
+      res.json(comp);
     }));
 
     // Give details about what changed between two versions of a document.
@@ -1167,6 +1130,37 @@ export class DocWorkerApi {
       })
     );
 
+    this._app.post('/api/docs/:docId/offer', canEdit,
+      withDoc(async (activeDoc, req, res) => {
+        const docSession = docSessionFromRequest(req);
+        const urlId = activeDoc.docName;
+        const parts = parseUrlId(urlId || '');
+        if (urlId && parts.trunkId && parts.forkId) {
+          const comparisonUrlId = parts.trunkId;
+          console.log({comparisonUrlId});
+          const comp = await this._compareDoc(req, activeDoc, {
+            showDetails: true,
+            docId2: comparisonUrlId,
+          });
+          console.log({comp});
+          console.log({work: 'offer', docSession});
+          await this._dbManager.setOffer(parts.forkId, comp);
+          res.json(comp);
+          return;
+        }
+        res.json(22);
+      })
+    );
+
+    this._app.get('/api/docs/:docId/offers', canEdit,
+     withDoc(async (activeDoc, req, res) => {
+       // const docSession = docSessionFromRequest(req);
+       const urlId = activeDoc.docName;
+       const result = await this._dbManager.getOffers(urlId);
+       sendReply(req, res, {data: {result}, status: 200});
+     })
+    );
+    
     // Create a document.  When an upload is included, it is imported as the initial
     // state of the document.  Otherwise a fresh empty document is created.
     // A "timezone" option can be supplied.
@@ -1490,6 +1484,57 @@ export class DocWorkerApi {
     }
     await this._dbManager.flushSingleDocAuthCache(scope, docId);
     await this._docManager.interruptDocClients(docId);
+  }
+
+  private async _compareDoc(req: RequestWithLogin, activeDoc: ActiveDoc,
+                            options: {
+                              showDetails: boolean,
+                              docId2: string,
+                            }) {
+    const {showDetails, docId2} = options;
+    const docSession = docSessionFromRequest(req);
+    const {states} = await this._getStates(docSession, activeDoc);
+    const ref = await fetch(this._grist.getHomeUrl(req, `/api/docs/${docId2}/states`), {
+      headers: {
+        ...getTransitiveHeaders(req),
+        'Content-Type': 'application/json',
+      }
+    });
+    const states2: DocState[] = (await ref.json()).states;
+    const left = states[0];
+    const right = states2[0];
+    if (!left || !right) {
+      // This should not arise unless there's a bug.
+      throw new Error('document with no history');
+    }
+    const rightHashes = new Set(states2.map(state => state.h));
+    const parent = states.find(state => rightHashes.has(state.h )) || null;
+    const leftChanged = parent && parent.h !== left.h;
+    const rightChanged = parent && parent.h !== right.h;
+    const summary = leftChanged ? (rightChanged ? 'both' : 'left') :
+        (rightChanged ? 'right' : (parent ? 'same' : 'unrelated'));
+    const comparison: DocStateComparison = {
+      left, right, parent, summary
+    };
+    if (showDetails && parent) {
+      // Calculate changes from the parent to the current version of this document.
+      const leftChanges = (await this._getChanges(docSession, activeDoc, states, parent.h,
+                                                  'HEAD')).details!.rightChanges;
+
+      // Calculate changes from the (common) parent to the current version of the other document.
+      const url = `/api/docs/${docId2}/compare?left=${parent.h}`;
+      const rightChangesReq = await fetch(this._grist.getHomeUrl(req, url), {
+        headers: {
+          ...getTransitiveHeaders(req),
+          'Content-Type': 'application/json',
+        }
+      });
+      const rightChanges = (await rightChangesReq.json()).details!.rightChanges;
+
+      // Add the left and right changes as details to the result.
+      comparison.details = { leftChanges, rightChanges };
+    }
+    return comparison;
   }
 }
 

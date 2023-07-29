@@ -46,6 +46,7 @@ import {DocSettingsPage} from 'app/client/ui/DocumentSettings';
 import {isTourActive} from "app/client/ui/OnBoardingPopups";
 import {IPageWidget, toPageWidget} from 'app/client/ui/PageWidgetPicker';
 import {linkFromId, selectBy} from 'app/client/ui/selectBy';
+import {VersionsPage} from 'app/client/ui/VersionsPage';
 import {WebhookPage} from 'app/client/ui/WebhookPage';
 import {startWelcomeTour} from 'app/client/ui/WelcomeTour';
 import {IWidgetType} from 'app/client/ui/widgetTypes';
@@ -574,7 +575,7 @@ export class GristDoc extends DisposableWithEvents {
   public buildDom() {
     const isMaximized = Computed.create(this, use => use(this.maximizedSectionId) !== null);
     const isPopup = Computed.create(this, use => {
-      return ['data', 'settings'].includes(use(this.activeViewId) as any) // On Raw data or doc settings pages
+      return ['data', 'versions', 'settings'].includes(use(this.activeViewId) as any) // On Raw data or doc settings pages
         || use(isMaximized) // Layout has a maximized section visible
         || typeof use(this._activeContent) === 'object'; // We are on show raw data popup
     });
@@ -596,6 +597,7 @@ export class GristDoc extends DisposableWithEvents {
           content === 'data' ? dom.create(RawDataPage, this) :
           content === 'settings' ? dom.create(DocSettingsPage, this) :
           content === 'webhook' ? dom.create(WebhookPage, this) :
+          content === 'versions' ? dom.create(VersionsPage, this) :
           content === 'GristDocTour' ? null :
           (typeof content === 'object') ? dom.create(owner => {
             // In case user changes a page, close the popup.

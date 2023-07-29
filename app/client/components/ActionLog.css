@@ -127,3 +127,7 @@
 .action_comment {
   display: none;
 }
+
+.action_accepted {
+  filter: opacity(0.25);
+}

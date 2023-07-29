@@ -192,7 +192,8 @@ function menuOriginal(doc: Document, appModel: AppModel, options: MenuOriginalOp
       cssMenuIconLink({href: originalUrl, target: '_blank'}, testId('open-original'),
         cssMenuIcon('FieldLink'),
       )
-    ),
+                                            ),
+    menuItem(() => 1, "Offer"),
     menuItem(replaceOriginal, t("Replace {{termToUse}}...", {termToUse}),
       // Disable if original is not writable, and also when comparing snapshots (since it's
       // unclear which of the versions to use).
