@@ -66,8 +66,9 @@ RUN \
   apt install -y --no-install-recommends python2 python-pip python-setuptools \
   build-essential libxml2-dev libxslt-dev python-dev zlib1g-dev && \
   pip2 install wheel && \
-  pip2 install -r requirements.txt && \
-  find /usr/lib -iname "libffi.so.6*" -exec cp {} /usr/local/lib \;
+  pip2 install -r requirements.txt
+
+#find /usr/lib -iname "libffi.so.6*" -exec cp {} /usr/local/lib \;
 
 ################################################################################
 ## Sandbox collection stage
@@ -113,7 +114,7 @@ COPY --from=collector-py2 /usr/local/lib/python2.7 /usr/local/lib/python2.7
 # Copy across an older libffi library binary needed by python2.
 # We moved it a bit sleazily to a predictable location to avoid awkward
 # architecture-dependent logic.
-COPY --from=collector-py2 /usr/local/lib/libffi.so.6* /usr/local/lib
+# COPY --from=collector-py2 /usr/local/lib/libffi.so.6* /usr/local/lib
 
 # Copy python3 files.
 COPY --from=collector-py3 /usr/local/bin/python3.11 /usr/bin/python3.11
