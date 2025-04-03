@@ -1,4 +1,4 @@
-# Grist
+# Grist - hello!
 
 Grist is a modern relational spreadsheet. It combines the flexibility of a spreadsheet with the robustness of a database.
 
