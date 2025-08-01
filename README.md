@@ -1,6 +1,6 @@
 # Grist
 
-Grist is a modern relational spreadsheet. It combines the flexibility of a spreadsheet with the robustness of a database.
+Grist is a modern relational spreadsheet. It combines the flexibility of a spreadsheet with the robustness of a database!
 
 * `grist-core` (this repo) has what you need to run a powerful spreadsheet hosting server. A version of `grist-core` has been packaged for cloud providers as [Grist Builder Edition](https://support.getgrist.com/install/grist-builder-edition/).
 * [`grist-desktop`](https://github.com/gristlabs/grist-desktop) is a Linux/macOS/Windows desktop app for viewing and editing spreadsheets stored locally.
