@@ -141,6 +141,16 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         );
         -- Plugins have unique keys.
         CREATE UNIQUE INDEX _gristsys_PluginData_unique_key on _gristsys_PluginData(pluginId, key);`);
+      await db.exec(`CREATE TABLE _gristsys_MergeHistory (
+        id INTEGER PRIMARY KEY,
+        sourceDocId TEXT NOT NULL,
+        ancestorHash TEXT NOT NULL,
+        sourceHash TEXT NOT NULL,
+        targetHashBefore TEXT NOT NULL,
+        targetHashAfter TEXT NOT NULL,
+        droppedConflicts TEXT,
+        timestamp TEXT NOT NULL
+      )`);
     },
     migrations: [
       async function(db: SQLiteDB): Promise<void> {
@@ -412,6 +422,21 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         // where the file is stored.
         // Default should be NULL.
         await db.exec(`ALTER TABLE _gristsys_Files ADD COLUMN storageId TEXT`);
+      },
+      async function(db: SQLiteDB): Promise<void> {
+        // Storage version 10.
+        // Migration to add _gristsys_MergeHistory table for tracking merge points
+        // between documents, enabling incremental repeated merges and retry safety.
+        await db.exec(`CREATE TABLE IF NOT EXISTS _gristsys_MergeHistory (
+          id INTEGER PRIMARY KEY,
+          sourceDocId TEXT NOT NULL,
+          ancestorHash TEXT NOT NULL,
+          sourceHash TEXT NOT NULL,
+          targetHashBefore TEXT NOT NULL,
+          targetHashAfter TEXT NOT NULL,
+          droppedConflicts TEXT,
+          timestamp TEXT NOT NULL
+        )`);
       },
     ],
   };
@@ -1623,6 +1648,35 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
   }
 
   /**
+   * Get the most recent merge record for a given source document.
+   */
+  public async getLastMergeRecord(sourceDocId: string): Promise<MergeRecord | null> {
+    const row = await this.get(
+      `SELECT * FROM _gristsys_MergeHistory WHERE sourceDocId = ? ORDER BY id DESC LIMIT 1`,
+      sourceDocId,
+    );
+    return row ? row as MergeRecord : null;
+  }
+
+  /**
+   * Write a merge record after a successful merge.
+   */
+  public async addMergeRecord(record: Omit<MergeRecord, "id">): Promise<void> {
+    await this.run(
+      `INSERT INTO _gristsys_MergeHistory
+        (sourceDocId, ancestorHash, sourceHash, targetHashBefore, targetHashAfter, droppedConflicts, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      record.sourceDocId,
+      record.ancestorHash,
+      record.sourceHash,
+      record.targetHashBefore,
+      record.targetHashAfter,
+      record.droppedConflicts ?? null,
+      record.timestamp,
+    );
+  }
+
+  /**
    * Get a list of indexes.  For use in tests.
    */
   public async testGetIndexes(): Promise<IndexInfo[]> {
@@ -2023,4 +2077,15 @@ export interface FileInfo {
   ident: string;
   storageId: string | null;
   data: Buffer;
+}
+
+export interface MergeRecord {
+  id?: number;
+  sourceDocId: string;
+  ancestorHash: string;
+  sourceHash: string;
+  targetHashBefore: string;
+  targetHashAfter: string;
+  droppedConflicts?: string | null;  // JSON
+  timestamp: string;
 }

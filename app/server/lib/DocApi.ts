@@ -1,5 +1,5 @@
 import { concatenateSummaries, summarizeAction } from "app/common/ActionSummarizer";
-import { createEmptyActionSummary } from "app/common/ActionSummary";
+import { ActionSummary, createEmptyActionSummary, TableDelta } from "app/common/ActionSummary";
 import { QueryFilters } from "app/common/ActiveDocAPI";
 import { ApiError } from "app/common/ApiError";
 import { BrowserSettings } from "app/common/BrowserSettings";
@@ -21,10 +21,16 @@ import {
   isBlankValue,
   isFullReferencingType,
   isRaisedException,
+  isRefListType,
   reencodeAsTypedCellValue,
 } from "app/common/gristTypes";
 import { buildUrlId, parseUrlId, SHARE_KEY_PREFIX } from "app/common/gristUrls";
 import { isAffirmative, safeJsonParse } from "app/common/gutil";
+import {
+  applyResolutions, ColumnTypeMap, detectConflicts, isMergeConflictsEmpty,
+  MergeConflicts, MergeResolutions, remapCollisions, removeConvergentEdits,
+  rewriteRefListValue, rewriteRefValue, RowRemap,
+} from "app/common/MergeUtils";
 import { SortFunc } from "app/common/SortFunc";
 import { Sort } from "app/common/SortSpec";
 import { MetaRowRecord } from "app/common/TableData";
@@ -105,6 +111,7 @@ import { runSQLQuery } from "app/server/lib/runSQLQuery";
 import { ServerColumnGetters } from "app/server/lib/ServerColumnGetters";
 import { localeFromRequest } from "app/server/lib/ServerLocale";
 import { getDocSessionShare } from "app/server/lib/sessionUtils";
+import { quoteIdent } from "app/server/lib/SQLiteDB";
 import {
   fetchDoc,
   globalUploadSet,
@@ -1190,6 +1197,17 @@ export class DocWorkerApi {
       const docSession = docSessionFromRequest(req);
       const changes = await activeDoc.applyProposal(docSession, proposalId);
       await sendReply(req, res, { data: { proposalId, changes }, status: 200 });
+    }));
+
+    this._app.post("/api/docs/:docId/merge", canEdit, withDoc(async (activeDoc, req, res) => {
+      const docSession = docSessionFromRequest(req);
+      const sourceDocId = req.body.sourceDocId;
+      if (!sourceDocId) {
+        throw new ApiError("sourceDocId is required", 400);
+      }
+      const resolutions = req.body.resolutions || null;
+      const result = await this._mergeDoc(req, activeDoc, docSession, sourceDocId, resolutions);
+      await sendReply(req, res, { data: result, status: 200 });
     }));
 
     // Do an import targeted at a specific workspace. Although the URL fits ApiServer, this
@@ -2281,65 +2299,779 @@ export class DocWorkerApi {
     });
   }
 
+  /**
+   * Implements the merge pipeline (Steps 0–8 from MERGE-PLAN.md).
+   */
+  private async _mergeDoc(
+    req: RequestWithLogin,
+    activeDoc: ActiveDoc,
+    docSession: OptDocSession,
+    sourceDocId: string,
+    resolutions: MergeResolutions | null,
+  ): Promise<MergeResponse> {
+    // Check for a previous merge record to support incremental merges.
+    const mergeRecord = await activeDoc.docStorage.getLastMergeRecord(sourceDocId);
+
+    // Step 0: Validate source — must share history with target.
+    // Use a permit for the source doc so that granular access rules on
+    // the source don't block the diff computation. The caller needs
+    // document-level view access (checked by the compare endpoint's
+    // routing), but table-level restrictions shouldn't block the merge.
+    const permitStore = this._grist.getPermitStore();
+    const permitKey = await permitStore.setPermit({ docId: sourceDocId });
+    try {
+      // Skip detailed diff computation if we have a merge record.
+      const comparison = await this._compareDocForMerge(
+        req, activeDoc, sourceDocId, permitKey,
+        { showDetails: !mergeRecord, maxRows: mergeRecord ? undefined : null },
+      );
+      if (comparison.summary === "unrelated") {
+        throw new ApiError("Documents are unrelated — no common history found", 400);
+      }
+      if (comparison.summary === "same") {
+        return { conflicts: { cells: [], rows: [] }, applied: false, actionCount: 0 };
+      }
+
+      let leftChanges: ActionSummary;
+      let rightChanges: ActionSummary;
+      let effectiveSourceHash: string;
+      let effectiveAncestorHash: string;
+
+      const systemSession = makeExceptionalDocSession("system");
+
+      if (mergeRecord) {
+        // Incremental merge: use the merge record's hashes as the ancestor.
+        // rightChanges = source from mergeRecord.sourceHash → source HEAD
+        // leftChanges = target from mergeRecord.targetHashAfter → target HEAD
+        try {
+          const targetStates = await activeDoc.getRecentStates(systemSession);
+          leftChanges = (await getChanges(systemSession, activeDoc, {
+            states: targetStates,
+            leftHash: mergeRecord.targetHashAfter,
+            rightHash: "HEAD",
+            maxRows: null,
+            skipAccessCheck: true,
+          })).details!.rightChanges;
+
+          // Fetch source's incremental changes via HTTP using the permit.
+          const url = `/api/docs/${sourceDocId}/compare?left=${mergeRecord.sourceHash}`;
+          const rightChangesReq = await fetch(this._grist.getHomeInternalUrl(url), {
+            headers: {
+              ...getTransitiveHeaders(req, { includeOrigin: false }),
+              "Permit": permitKey,
+              "Content-Type": "application/json",
+            },
+          });
+          if (!rightChangesReq.ok) {
+            throw new Error("Failed to fetch source changes");
+          }
+          const rightResult = await rightChangesReq.json();
+          rightChanges = rightResult.details?.rightChanges ?? createEmptyActionSummary();
+
+          effectiveSourceHash = comparison.right.h;
+          effectiveAncestorHash = mergeRecord.sourceHash;
+        } catch (e) {
+          // If incremental merge fails (e.g. history truncated), fall back to full comparison.
+          log.rawWarn("Incremental merge failed, falling back to full comparison", {
+            error: String(e),
+            sourceDocId,
+          });
+          // Re-fetch with full details since we skipped them initially.
+          const fullComparison = await this._compareDocForMerge(
+            req, activeDoc, sourceDocId, permitKey, {
+              showDetails: true,
+              maxRows: null },
+          );
+          if (!fullComparison.details) {
+            throw new ApiError("Could not compute detailed comparison", 500);
+          }
+          leftChanges = fullComparison.details.leftChanges;
+          rightChanges = fullComparison.details.rightChanges;
+          effectiveSourceHash = comparison.right.h;
+          effectiveAncestorHash = comparison.parent?.h || "";
+        }
+      } else {
+        if (!comparison.details) {
+          throw new ApiError("Could not compute detailed comparison", 500);
+        }
+        leftChanges = comparison.details.leftChanges;
+        rightChanges = comparison.details.rightChanges;
+        effectiveSourceHash = comparison.right.h;
+        effectiveAncestorHash = comparison.parent?.h || "";
+      }
+
+      // Step 2: Gate on structural changes (and collect source-only additions).
+      const structuralAdditions = this._checkStructuralGate(leftChanges, rightChanges, activeDoc);
+
+      // Step 3: Remap colliding rowIds.
+      const targetRowIds = await this._getTargetRowIds(activeDoc, rightChanges);
+      const columnTypes = this._getColumnTypes(activeDoc);
+      const { remapped, remap } = remapCollisions(rightChanges, leftChanges, targetRowIds, columnTypes);
+
+      // Step 4: Detect conflicts (also identifies convergent edits).
+      const { conflicts, convergentKeys } = detectConflicts(leftChanges, remapped);
+
+      // Re-inject dropped conflicts from previous merge record.
+      if (mergeRecord?.droppedConflicts) {
+        this._reinjectDroppedConflicts(conflicts, mergeRecord.droppedConflicts, remapped);
+      }
+
+      // Step 5: Resolve conflicts.
+      if (!isMergeConflictsEmpty(conflicts) && !resolutions) {
+        return { conflicts, applied: false, actionCount: 0 };
+      }
+
+      let resolved = remapped;
+      if (!isMergeConflictsEmpty(conflicts) && resolutions) {
+        resolved = applyResolutions(remapped, conflicts, resolutions);
+      }
+
+      // Remove convergent edits (both sides set the same value — no-ops).
+      resolved = removeConvergentEdits(resolved, convergentKeys);
+
+      // Check if there are any actual changes to apply.
+      const hasChanges = structuralAdditions.length > 0 ||
+        Object.entries(resolved.tableDeltas).some(([tableId, td]) => {
+          if (tableId.startsWith("_grist_")) { return false; }
+          if (td.addRows.length > 0 || td.removeRows.length > 0) { return true; }
+          const addSet = new Set(td.addRows);
+          const updateSet = new Set(td.updateRows);
+          return Object.keys(td.columnDeltas).some(colId =>
+            colId !== "manualSort" && !colId.startsWith("gristHelper_") &&
+            Object.keys(td.columnDeltas[colId]).some(rowId =>
+              !addSet.has(Number(rowId)) && updateSet.has(Number(rowId)),
+            ),
+          );
+        });
+
+      if (!hasChanges) {
+        // Nothing to apply (e.g. all changes were convergent edits).
+        // Still record the merge so repeated merges work correctly.
+        await activeDoc.docStorage.addMergeRecord({
+          sourceDocId,
+          ancestorHash: effectiveAncestorHash,
+          sourceHash: effectiveSourceHash,
+          targetHashBefore: comparison.left.h,
+          targetHashAfter: comparison.left.h,
+          droppedConflicts: null,
+          timestamp: new Date().toISOString(),
+        });
+        return { conflicts, applied: false, actionCount: 0 };
+      }
+
+      // Step 6: Optimistic concurrency check.
+      const states = await activeDoc.getRecentStates(docSession);
+      const currentHead = states[0]?.h;
+      const expectedHead = comparison.left.h;
+      if (currentHead !== expectedHead) {
+        throw new ApiError(
+          "Target document changed since the merge was computed. Please retry.",
+          409,
+        );
+      }
+
+      // Step 7: Apply.
+      const targetHashBefore = currentHead;
+      const actionCount = await this._applyMerge(
+        activeDoc, docSession, resolved, remap,
+        { columnTypes, structuralAdditions, leftChanges, targetRowIds },
+      );
+
+      // Step 8: Record the merge.
+      const statesAfter = await activeDoc.getRecentStates(docSession);
+      const targetHashAfter = statesAfter[0]?.h || targetHashBefore;
+
+      // Build dropped conflicts JSON for the merge record.
+      let droppedConflicts: string | null = null;
+      if (resolutions && !isMergeConflictsEmpty(conflicts)) {
+        // Build a lookup for cell resolutions to avoid O(C*R) linear scans.
+        const resolutionMap = new Map<string, "left" | "right" | "dismiss">();
+        for (const r of resolutions.cells) {
+          resolutionMap.set(`${r.tableId}:${r.colId}:${r.rowId}`, r.pick);
+        }
+        const dropped: DroppedConflict[] = [];
+        for (const c of conflicts.cells) {
+          const key = `${c.tableId}:${c.colId}:${c.rowId}`;
+          const pick = resolutionMap.get(key) ?? resolutions.strategy;
+          if (pick === "left" || pick === "dismiss") {
+            dropped.push({
+              tableId: c.tableId,
+              colId: c.colId,
+              rowId: c.rowId,
+              sourceValue: c.right,
+              type: pick === "dismiss" ? "dismissed" : "left-wins",
+            });
+          }
+        }
+        if (dropped.length > 0) {
+          droppedConflicts = JSON.stringify(dropped);
+        }
+      }
+
+      await activeDoc.docStorage.addMergeRecord({
+        sourceDocId,
+        ancestorHash: effectiveAncestorHash,
+        sourceHash: effectiveSourceHash,
+        targetHashBefore,
+        targetHashAfter,
+        droppedConflicts,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        conflicts,
+        applied: true,
+        actionCount,
+        sourceHash: effectiveSourceHash,
+        targetHashBefore,
+        targetHashAfter,
+      };
+    } finally {
+      await permitStore.removePermit(permitKey);
+    }
+  }
+
+  /**
+   * Step 2: Check structural gate. Reject renames, deletes, type changes,
+   * and conflicting column additions (same colId on both sides).
+   * Returns source-only column/table additions that should be applied.
+   */
+  private _checkStructuralGate(
+    left: ActionSummary, right: ActionSummary, activeDoc: ActiveDoc,
+  ): StructuralAddition[] {
+    const leftMeta = left.tableDeltas._grist_Tables_column;
+    const rightMeta = right.tableDeltas._grist_Tables_column;
+
+    // Check for renames, deletes, type changes on either side.
+    for (const [label, meta] of [["source", rightMeta], ["target", leftMeta]] as const) {
+      if (!meta) { continue; }
+      if (meta.removeRows.length > 0) {
+        throw new ApiError(
+          `Structural changes detected: ${label} removed columns. ` +
+          "Please align schemas before merging.", 400);
+      }
+      // Column renames show up as updates to the colId field in _grist_Tables_column,
+      // not as columnRenames on the metadata table's TableDelta (which would mean the
+      // metadata table's own columns were renamed — a different thing).
+      if (meta.columnDeltas.colId) {
+        for (const rowId of meta.updateRows) {
+          if (meta.columnDeltas.colId[rowId]) {
+            throw new ApiError(
+              `Structural changes detected: ${label} renamed columns. ` +
+              "Please align schemas before merging.", 400);
+          }
+        }
+      }
+      // Check for type changes in updateRows.
+      if (meta.columnDeltas.type) {
+        for (const rowId of meta.updateRows) {
+          if (meta.columnDeltas.type[rowId]) {
+            throw new ApiError(
+              `Structural changes detected: ${label} changed column types. ` +
+              "Please align schemas before merging.", 400);
+          }
+        }
+      }
+    }
+
+    // Check for table-level renames/deletes.
+    for (const [label, summary] of [["source", right], ["target", left]] as const) {
+      const tableMeta = summary.tableDeltas._grist_Tables;
+      if (!tableMeta) { continue; }
+      if (tableMeta.removeRows.length > 0) {
+        throw new ApiError(
+          `Structural changes detected: ${label} removed tables. ` +
+          "Please align schemas before merging.", 400);
+      }
+      if (tableMeta.columnRenames.length > 0) {
+        throw new ApiError(
+          `Structural changes detected: ${label} renamed tables. ` +
+          "Please align schemas before merging.", 400);
+      }
+    }
+
+    // Check for conflicting column additions (same colId in same table on both sides).
+    if (leftMeta?.addRows.length && rightMeta?.addRows.length) {
+      const leftAdds = new Set<string>();
+      for (const rowId of leftMeta.addRows) {
+        const colIdDelta = leftMeta.columnDeltas.colId?.[rowId];
+        const parentDelta = leftMeta.columnDeltas.parentId?.[rowId];
+        if (colIdDelta && parentDelta) {
+          const colId = colIdDelta[1]?.[0];
+          const parentId = parentDelta[1]?.[0];
+          if (colId && parentId) {
+            leftAdds.add(`${parentId}:${colId}`);
+          }
+        }
+      }
+      for (const rowId of rightMeta.addRows) {
+        const colIdDelta = rightMeta.columnDeltas.colId?.[rowId];
+        const parentDelta = rightMeta.columnDeltas.parentId?.[rowId];
+        if (colIdDelta && parentDelta) {
+          const colId = colIdDelta[1]?.[0];
+          const parentId = parentDelta[1]?.[0];
+          if (colId && parentId && leftAdds.has(`${parentId}:${colId}`)) {
+            throw new ApiError(
+              `Conflicting structural changes: both sides added column '${colId}'. ` +
+              "Please align schemas before merging.", 400);
+          }
+        }
+      }
+    }
+
+    // Collect source-only column additions to emit as AddColumn actions.
+    const additions: StructuralAddition[] = [];
+    if (rightMeta?.addRows.length) {
+      const tables = activeDoc.docData?.getMetaTable("_grist_Tables");
+      for (const rowId of rightMeta.addRows) {
+        const colIdDelta = rightMeta.columnDeltas.colId?.[rowId];
+        const typeDelta = rightMeta.columnDeltas.type?.[rowId];
+        const parentDelta = rightMeta.columnDeltas.parentId?.[rowId];
+        const isFormulaDelta = rightMeta.columnDeltas.isFormula?.[rowId];
+        const formulaDelta = rightMeta.columnDeltas.formula?.[rowId];
+        if (!colIdDelta || !parentDelta) { continue; }
+        const colId = colIdDelta[1]?.[0] as string;
+        const parentId = parentDelta[1]?.[0] as number;
+        const colType = (typeDelta?.[1]?.[0] as string) || "Any";
+        const isFormula = Boolean(isFormulaDelta?.[1]?.[0]);
+        const formula = (formulaDelta?.[1]?.[0] as string) || "";
+        // Look up tableId from parentId.
+        const tableRec = tables?.getRecord(parentId);
+        const tableId = tableRec ? tableRec.tableId as string : null;
+        if (!tableId) { continue; }
+        additions.push({ tableId, colId, colType, isFormula, formula });
+      }
+    }
+    return additions;
+  }
+
+  /**
+   * Re-inject dropped conflicts from a previous merge into the current conflicts list.
+   * Resurfaced conflicts bypass normal detection (their ancestor values are stale).
+   */
+  private _reinjectDroppedConflicts(
+    conflicts: MergeConflicts,
+    droppedJson: string,
+    remapped: ActionSummary,
+  ): void {
+    let dropped: DroppedConflict[];
+    try {
+      dropped = JSON.parse(droppedJson);
+    } catch {
+      return;
+    }
+
+    // Build a set of cells that the source freshly edited in this round.
+    const freshSourceCells = new Set<string>();
+    for (const [tableId, td] of Object.entries(remapped.tableDeltas)) {
+      for (const [colId, cd] of Object.entries(td.columnDeltas)) {
+        for (const rowId of Object.keys(cd)) {
+          freshSourceCells.add(`${tableId}:${colId}:${rowId}`);
+        }
+      }
+    }
+
+    for (const item of dropped) {
+      const key = `${item.tableId}:${item.colId}:${item.rowId}`;
+
+      // If source made a fresh edit to this cell, the dropped value is obsolete.
+      if (freshSourceCells.has(key)) { continue; }
+
+      // Dismissed conflicts never resurface.
+      if (item.type === "dismissed") { continue; }
+
+      // Left-wins: resurface as a conflict.
+      // Target value is null here — the UI (Phase 6) will need to fetch current values.
+      conflicts.cells.push({
+        tableId: item.tableId,
+        colId: item.colId,
+        rowId: item.rowId,
+        ancestor: null,
+        left: null,
+        right: item.sourceValue,
+      });
+    }
+  }
+
+  /**
+   * Get the current rowIds for user tables in the target doc.
+   * Queries tables that appear in the right summary (needed for remap collision
+   * detection and for detecting deleted rows in delete-update conflicts).
+   */
+  private async _getTargetRowIds(
+    activeDoc: ActiveDoc, rightChanges: ActionSummary,
+  ): Promise<Map<string, Set<number>>> {
+    const result = new Map<string, Set<number>>();
+    // Need row IDs for tables where the source has any changes (adds, updates, or removes).
+    // Need addRows tables for remap collision detection, and updateRows
+    // tables for delete-update detection. Tables with only removeRows
+    // don't need target row IDs.
+    const tablesToQuery = Object.entries(rightChanges.tableDeltas)
+      .filter(([tableId, td]) => !tableId.startsWith("_grist_") &&
+        (td.addRows.length > 0 || td.updateRows.length > 0))
+      .map(([tableId]) => tableId);
+    for (const tableId of tablesToQuery) {
+      const rows = await activeDoc.docStorage.all(`SELECT id FROM ${quoteIdent(tableId)}`);
+      result.set(tableId, new Set(rows.map(r => r.id as number)));
+    }
+    return result;
+  }
+
+  /** Get column types for all user tables (for Ref/RefList detection). */
+  private _getColumnTypes(activeDoc: ActiveDoc): ColumnTypeMap {
+    const result: ColumnTypeMap = {};
+    if (!activeDoc.docData) { return result; }
+    const columns = activeDoc.docData.getMetaTable("_grist_Tables_column");
+    const tables = activeDoc.docData.getMetaTable("_grist_Tables");
+    if (!columns || !tables) { return result; }
+
+    for (const col of columns.getRecords()) {
+      const tableRec = tables.getRecord(col.parentId as number);
+      if (!tableRec) { continue; }
+      const tableId = tableRec.tableId as string;
+      if (tableId.startsWith("_grist_")) { continue; }
+      const colType = col.type as string;
+      if (isFullReferencingType(colType)) {
+        if (!result[tableId]) { result[tableId] = {}; }
+        result[tableId][col.colId as string] = colType;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Step 7: Apply the resolved merge. Returns the number of actions applied.
+   * Uses two applyUserActions calls: one for adds/removes/non-Ref updates,
+   * and one for Ref fixups.
+   */
+  private async _applyMerge(
+    activeDoc: ActiveDoc,
+    docSession: OptDocSession,
+    resolved: ActionSummary,
+    remap: RowRemap,
+    ctx: MergeApplyContext,
+  ): Promise<number> {
+    const { columnTypes, structuralAdditions, leftChanges, targetRowIds } = ctx;
+    const actions: UserAction[] = [];
+    // Track which actions are AddRecords and their table/placeholder, for retValues mapping.
+    const addTracker: { tableId: string; placeholder: number }[] = [];
+
+    // Source-only column/table additions go first (schema before data).
+    for (const add of structuralAdditions) {
+      const colInfo: Record<string, any> = { type: add.colType };
+      if (add.isFormula) { colInfo.isFormula = true; }
+      if (add.formula) { colInfo.formula = add.formula; }
+      actions.push(["AddColumn", add.tableId, add.colId, colInfo]);
+    }
+
+    // Collect Ref fixup info: which (tableId, rowId, colId) need fixup after adds.
+    const needsRefFixup: boolean = Object.keys(remap).length > 0;
+    const refFixups: { tableId: string; rowId: number; colId: string; value: any }[] = [];
+
+    for (const [tableId, td] of Object.entries(resolved.tableDeltas)) {
+      if (tableId.startsWith("_grist_")) { continue; }
+
+      const colTypes = columnTypes[tableId] || {};
+      const tableRemap = remap[tableId];
+
+      // Removes.
+      for (const rowId of td.removeRows) {
+        actions.push(["RemoveRecord", tableId, rowId]);
+      }
+
+      // Adds.
+      for (const rowId of td.addRows) {
+        const rec: Record<string, any> = {};
+
+        for (const [colId, cd] of Object.entries(td.columnDeltas)) {
+          const delta = cd[rowId];
+          if (!delta) { continue; }
+          const value = delta[1]?.[0];
+          if (value === undefined) { continue; }
+
+          // Skip formula columns and hidden columns.
+          if (colId === "manualSort" || colId.startsWith("gristHelper_")) { continue; }
+
+          if (needsRefFixup && isFullReferencingType(colTypes[colId] || "")) {
+            // Zero out Ref/RefList values; fixup in Call 2.
+            const isRefList = isRefListType(colTypes[colId]);
+            rec[colId] = isRefList ? ["L"] : 0;
+            refFixups.push({ tableId, rowId, colId, value });
+          } else {
+            rec[colId] = value;
+          }
+        }
+
+        // Use null for colliding rows (engine assigns), original ID otherwise.
+        const assignedId = (tableRemap?.has(rowId) || rowId < 0) ? null : rowId;
+        actions.push(["AddRecord", tableId, assignedId, rec]);
+        addTracker.push({ tableId, placeholder: rowId });
+      }
+
+      // Updates (non-Ref columns, or Ref columns that don't reference remapped tables).
+      const addRowSet = new Set(td.addRows);
+      const existingRows = targetRowIds?.get(tableId);
+      for (const rowId of td.updateRows) {
+        if (addRowSet.has(rowId)) { continue; }  // Handled in adds.
+
+        // If the row was deleted on the target side (delete-update conflict
+        // resolved with "keep"), we need to re-add it, not update it.
+        const rowExistsInTarget = !existingRows || existingRows.has(rowId);
+        if (!rowExistsInTarget) {
+          // Reconstruct the full row from left's delete deltas + right's updates.
+          const rec = this._reconstructDeletedRow(tableId, rowId, td, leftChanges);
+          actions.push(["AddRecord", tableId, rowId, rec]);
+          addTracker.push({ tableId, placeholder: rowId });
+          continue;
+        }
+
+        const rec: Record<string, any> = {};
+        for (const [colId, cd] of Object.entries(td.columnDeltas)) {
+          const delta = cd[rowId];
+          if (!delta) { continue; }
+          const value = delta[1]?.[0];
+          if (value === undefined) { continue; }
+          if (colId === "manualSort" || colId.startsWith("gristHelper_")) { continue; }
+
+          if (needsRefFixup && isFullReferencingType(colTypes[colId] || "") &&
+            this._hasRemappedRefs(value, colTypes[colId], remap)) {
+            // Defer this cell to the Ref fixup call.
+            refFixups.push({ tableId, rowId, colId, value });
+          } else {
+            rec[colId] = value;
+          }
+        }
+        if (Object.keys(rec).length > 0) {
+          actions.push(["UpdateRecord", tableId, rowId, rec]);
+        }
+      }
+    }
+
+    if (actions.length === 0 && refFixups.length === 0) {
+      return 0;
+    }
+
+    // Call 1: Adds, removes, non-Ref updates.
+    let call1ActionNum: number | undefined;
+    if (actions.length > 0) {
+      const result = await activeDoc.applyUserActions(docSession, actions);
+      call1ActionNum = result.actionNum;
+
+      // Build the final remap from retValues.
+      // retValues is indexed by action position. addTracker tracks which
+      // actions are AddRecords and their placeholder IDs.
+      if (needsRefFixup && addTracker.length > 0) {
+        const retValues = result.retValues;
+        let trackerIdx = 0;
+        for (let i = 0; i < actions.length; i++) {
+          if (actions[i][0] === "AddRecord") {
+            const realId = retValues[i];  // retValues is indexed by action position
+            const { placeholder, tableId } = addTracker[trackerIdx];
+            if (placeholder < 0 && typeof realId === "number") {
+              if (!remap[tableId]) { remap[tableId] = new Map(); }
+              remap[tableId].set(placeholder, realId);
+            }
+            trackerIdx++;
+          }
+        }
+      }
+    }
+
+    // Call 2: Ref fixups (only if there are remapped rows with Ref columns).
+    if (refFixups.length > 0 && needsRefFixup) {
+      const fixupActions: UserAction[] = [];
+
+      for (const { tableId, rowId, colId, value } of refFixups) {
+        // Resolve the rowId — it might be a placeholder from an add.
+        const tableRemap = remap[tableId];
+        const realRowId = tableRemap?.get(rowId) ?? rowId;
+
+        // Rewrite the Ref/RefList value using the final remap.
+        const colType = columnTypes[tableId]?.[colId] || "";
+        const refTableId = getReferencedTableId(colType);
+        const refRemap = refTableId ? remap[refTableId] : undefined;
+        let fixedValue = value;
+        if (refRemap) {
+          if (isRefListType(colType)) {
+            fixedValue = rewriteRefListValue(value, refRemap);
+          } else {
+            fixedValue = rewriteRefValue(value, refRemap);
+          }
+        }
+
+        fixupActions.push(["UpdateRecord", tableId, realRowId, { [colId]: fixedValue }]);
+      }
+
+      if (fixupActions.length > 0) {
+        await activeDoc.applyUserActions(docSession, fixupActions, {
+          otherId: call1ActionNum,
+          linkId: call1ActionNum,
+        });
+      }
+    }
+
+    return actions.length + refFixups.length;
+  }
+
+  /**
+   * Reconstruct a full row that was deleted on the target side, for
+   * delete-update "keep" resolution. Uses the left (target) summary's
+   * removeRows deltas to get the pre-delete values, overlaid with the
+   * right (source) summary's updates.
+   */
+  private _reconstructDeletedRow(
+    tableId: string,
+    rowId: number,
+    rightTd: TableDelta,
+    leftChanges: ActionSummary,
+  ): Record<string, any> {
+    const rec: Record<string, any> = {};
+    // Start with ancestor values from the left's delete deltas.
+    const leftTd = leftChanges.tableDeltas[tableId];
+    if (leftTd) {
+      for (const [colId, cd] of Object.entries(leftTd.columnDeltas)) {
+        const delta = cd[rowId];
+        if (!delta) { continue; }
+        // delta[0] is the before-value (what was there before deletion).
+        const beforeValue = delta[0];
+        if (beforeValue === null || beforeValue === "?") { continue; }
+        if (colId === "manualSort" || colId.startsWith("gristHelper_")) { continue; }
+        rec[colId] = beforeValue[0];
+      }
+    }
+    // Overlay with the source's updated values.
+    for (const [colId, cd] of Object.entries(rightTd.columnDeltas)) {
+      const delta = cd[rowId];
+      if (!delta) { continue; }
+      const value = delta[1]?.[0];
+      if (value === undefined) { continue; }
+      if (colId === "manualSort" || colId.startsWith("gristHelper_")) { continue; }
+      rec[colId] = value;
+    }
+    return rec;
+  }
+
+  /** Check if a cell value contains any rowId that was remapped. */
+  private _hasRemappedRefs(value: any, colType: string, remap: RowRemap): boolean {
+    const refTableId = getReferencedTableId(colType);
+    if (!refTableId) { return false; }
+    const tableRemap = remap[refTableId];
+    if (!tableRemap || tableRemap.size === 0) { return false; }
+    if (isRefListType(colType)) {
+      if (!Array.isArray(value) || value[0] !== "L") { return false; }
+      return value.slice(1).some((id: any) => typeof id === "number" && tableRemap.has(id));
+    } else {
+      return typeof value === "number" && tableRemap.has(value);
+    }
+  }
+
+  /**
+   * Like _compareDoc, but uses a system session for the target-side diff
+   * and a permit for the source-side HTTP calls. This allows merges to work
+   * even when granular access rules restrict the caller's view.
+   */
+  private async _compareDocForMerge(
+    req: RequestWithLogin,
+    activeDoc: ActiveDoc,
+    sourceDocId: string,
+    permitKey: string,
+    options: { showDetails: boolean; maxRows: number | null | undefined },
+  ): Promise<DocStateComparison> {
+    const systemSession = makeExceptionalDocSession("system");
+    const extraHeaders = { Permit: permitKey };
+    return this._compareDocCore(req, activeDoc, sourceDocId, {
+      ...options,
+      targetSession: systemSession,
+      extraSourceHeaders: extraHeaders,
+      skipAccessCheck: true,
+    });
+  }
+
   private async _compareDoc(req: RequestWithLogin, activeDoc: ActiveDoc,
     options: {
       showDetails: boolean,
       docId2: string,
       maxRows: number | null | undefined,
     }) {
-    const { showDetails, docId2, maxRows } = options;
-    const docSession = docSessionFromRequest(req);
-    const { states } = await this._getStates(docSession, activeDoc);
-    const ref = await fetch(this._grist.getHomeInternalUrl(`/api/docs/${docId2}/states`), {
-      headers: {
-        ...getTransitiveHeaders(req, { includeOrigin: false }),
-        "Content-Type": "application/json",
-      },
-    });
-    if (!ref.ok) {
-      throw new ApiError(await ref.text(), ref.status);
+    return this._compareDocCore(req, activeDoc, options.docId2, options);
+  }
+
+  /**
+   * Shared core for _compareDoc and _compareDocForMerge.
+   * Finds the common ancestor between two docs and optionally computes
+   * detailed change summaries.
+   */
+  private async _compareDocCore(
+    req: RequestWithLogin,
+    activeDoc: ActiveDoc,
+    docId2: string,
+    options: {
+      showDetails: boolean,
+      maxRows: number | null | undefined,
+      targetSession?: OptDocSession,
+      extraSourceHeaders?: Record<string, string>,
+      skipAccessCheck?: boolean,
+    },
+  ): Promise<DocStateComparison> {
+    const { showDetails, maxRows, extraSourceHeaders, skipAccessCheck } = options;
+    const targetSession = options.targetSession ?? docSessionFromRequest(req);
+    const { states } = await this._getStates(targetSession, activeDoc);
+
+    // Fetch source doc states via HTTP.
+    const sourceHeaders = {
+      ...getTransitiveHeaders(req, { includeOrigin: false }),
+      ...extraSourceHeaders,
+      "Content-Type": "application/json",
+    };
+    const statesRef = await fetch(
+      this._grist.getHomeInternalUrl(`/api/docs/${docId2}/states`),
+      { headers: sourceHeaders },
+    );
+    if (!statesRef.ok) {
+      throw new ApiError(await statesRef.text(), statesRef.status);
     }
-    const states2: DocState[] = (await ref.json()).states;
+    const states2: DocState[] = (await statesRef.json()).states;
+
+    // Find common ancestor.
     const left = states[0];
     const right = states2[0];
     if (!left || !right) {
-      // This should not arise unless there's a bug.
       throw new Error("document with no history");
     }
     const rightHashes = new Set(states2.map(state => state.h));
     const parent = states.find(state => rightHashes.has(state.h)) || null;
     const leftChanged = parent && parent.h !== left.h;
     const rightChanged = parent && parent.h !== right.h;
-    const summary = leftChanged ? (rightChanged ? "both" : "left") :
+    const summary: DocStateComparison["summary"] = leftChanged ?
+      (rightChanged ? "both" : "left") :
       (rightChanged ? "right" : (parent ? "same" : "unrelated"));
-    const comparison: DocStateComparison = {
-      left, right, parent, summary,
-    };
+    const comparison: DocStateComparison = { left, right, parent, summary };
+
     if (showDetails && parent) {
-      // Calculate changes from the parent to the current version of this document.
+      // Target-side diff.
       const leftChanges = (
-        await getChanges(docSession, activeDoc, {
+        await getChanges(targetSession, activeDoc, {
           states,
           leftHash: parent.h,
           rightHash: "HEAD",
           maxRows,
+          skipAccessCheck,
         })
       ).details!.rightChanges;
 
-      // Calculate changes from the (common) parent to the current version of the other document.
+      // Source-side diff via HTTP.
       let url = `/api/docs/${docId2}/compare?left=${parent.h}`;
       if (maxRows !== undefined) {
         url += `&maxRows=${maxRows}`;
       }
-      const rightChangesReq = await fetch(this._grist.getHomeInternalUrl(url), {
-        headers: {
-          ...getTransitiveHeaders(req, { includeOrigin: false }),
-          "Content-Type": "application/json",
-        },
-      });
+      const rightChangesReq = await fetch(
+        this._grist.getHomeInternalUrl(url),
+        { headers: sourceHeaders },
+      );
+      if (!rightChangesReq.ok) {
+        throw new ApiError(await rightChangesReq.text(), rightChangesReq.status);
+      }
       const rightChanges = (await rightChangesReq.json()).details!.rightChanges;
-
-      // Add the left and right changes as details to the result.
       comparison.details = { leftChanges, rightChanges };
     }
 
@@ -2628,12 +3360,13 @@ export async function getChanges(
     leftHash: string;
     rightHash: string;
     maxRows?: number | null;
+    skipAccessCheck?: boolean;
   },
 ): Promise<DocStateComparison> {
   // The change calculation currently cannot factor in
   // granular access rules, so we need broad read rights
-  // to execute it.
-  if (!await activeDoc.canCopyEverything(docSession)) {
+  // to execute it — unless the caller has already verified access.
+  if (!options.skipAccessCheck && !await activeDoc.canCopyEverything(docSession)) {
     throw new ApiError("insufficient access", 403);
   }
 
@@ -2666,3 +3399,37 @@ export async function getChanges(
   };
   return result;
 }
+
+interface MergeApplyContext {
+  columnTypes: ColumnTypeMap;
+  structuralAdditions: StructuralAddition[];
+  leftChanges: ActionSummary;
+  targetRowIds: Map<string, Set<number>>;
+}
+
+interface DroppedConflict {
+  tableId: string;
+  colId: string;
+  rowId: number;
+  sourceValue: any;
+  type: "left-wins" | "dismissed";
+}
+
+interface StructuralAddition {
+  tableId: string;
+  colId: string;
+  colType: string;
+  isFormula: boolean;
+  formula: string;
+}
+
+interface MergeResponse {
+  conflicts: MergeConflicts;
+  applied: boolean;
+  actionCount: number;
+  sourceHash?: string;
+  targetHashBefore?: string;
+  targetHashAfter?: string;
+}
+
+// removeConvergentEdits, rewriteRefValue, and rewriteRefListValue imported from MergeUtils.
