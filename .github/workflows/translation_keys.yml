@@ -33,7 +33,7 @@ jobs:
         id: scan-keys
         run: |
           git checkout -b translation-keys
-          yarn run generate:translation
+          yarn run generate:translation 2>&1 | tee /tmp/scan-output.txt
           git status --porcelain
           if [[ $(git status --porcelain | wc -l) -eq "0" ]]; then
             echo "No changes"
@@ -58,7 +58,8 @@ jobs:
             echo "Existing translation keys PR #$num is open, skipping"
             exit 0
           fi
-          gh pr create --fill
+          body=$(grep -E "Merging key|merge\(s\)" /tmp/scan-output.txt | head -20)
+          gh pr create --title "automated update to translation keys" --body "$body"
           gh pr merge --merge --delete-branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
