@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    if: github.repository_owner == 'gristlabs'
+    if: github.repository_owner == 'gristlabs' || github.repository_owner == 'paulfitz'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v2
