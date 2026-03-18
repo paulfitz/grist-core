@@ -58,7 +58,7 @@ jobs:
             echo "Existing translation keys PR #$num is open, skipping"
             exit 0
           fi
-          num=$(gh pr create --fill --json number -q ".number")
-          gh pr merge "$num" --merge --delete-branch
+          gh pr create --fill
+          gh pr merge --merge --delete-branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
