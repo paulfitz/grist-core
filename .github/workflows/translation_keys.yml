@@ -58,7 +58,7 @@ jobs:
             echo "Existing translation keys PR #$num is open, skipping"
             exit 0
           fi
-          body=$(grep -E "Merging key|merge\(s\)" /tmp/scan-output.txt | head -20)
+          body=$(sed -n '/TRANSLATION_SUMMARY_START/,/TRANSLATION_SUMMARY_END/{//d;p;}' /tmp/scan-output.txt)
           gh pr create --title "automated update to translation keys" --body "$body"
           gh pr merge --merge --delete-branch
         env:
