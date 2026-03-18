@@ -30,7 +30,7 @@ import { dom } from "grainjs";
 import * as ko from "knockout";
 
 const t = makeT("App");
-t('DummyTestKey');  // temporary, for testing translation workflow
+t('DummyTestKey1');  // temporary, for testing translation workflow
 
 const G = getBrowserGlobals("document", "window");
 
