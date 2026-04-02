@@ -18,6 +18,7 @@ import { ActionHistoryImpl } from "app/server/lib/ActionHistoryImpl";
 import { appSettings } from "app/server/lib/AppSettings";
 import { combineExpr, ExpandedQuery } from "app/server/lib/ExpandedQuery";
 import { IDocStorageManager } from "app/server/lib/IDocStorageManager";
+import * as migrationUtils from "app/server/lib/MigrationUtils";
 import log from "app/server/lib/log";
 import { OnDemandStorage } from "app/server/lib/OnDemandActions";
 import { MinDBOptions } from "app/server/lib/SqliteCommon";
@@ -81,13 +82,13 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
    */
   public static docStorageSchema: SchemaInfo = {
     async create(db: SQLiteDB): Promise<void> {
-      await db.exec(`CREATE TABLE _gristsys_Files (
+      await db.exec(`CREATE TABLE "_gristsys_Files" (
         id INTEGER PRIMARY KEY,
         ident TEXT UNIQUE,
         data BLOB,
-        storageId TEXT
+        "storageId" TEXT
        )`);
-      await db.exec(`CREATE TABLE _gristsys_Action (
+      await db.exec(`CREATE TABLE "_gristsys_Action" (
         id INTEGER PRIMARY KEY,
         "actionNum" BLOB DEFAULT 0,
         "time" BLOB DEFAULT 0,
@@ -97,7 +98,7 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         "linkId" BLOB DEFAULT 0,
         "json" BLOB DEFAULT ''
       )`);
-      await db.exec(`CREATE TABLE _gristsys_Action_step (
+      await db.exec(`CREATE TABLE "_gristsys_Action_step" (
         id INTEGER PRIMARY KEY,
         "parentId" BLOB DEFAULT 0,
         "type" BLOB DEFAULT '',
@@ -108,111 +109,69 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         "values" BLOB DEFAULT '',
         "json" BLOB DEFAULT ''
       )`);
-      await db.exec(`CREATE TABLE _gristsys_ActionHistory (
+      await db.exec(`CREATE TABLE "_gristsys_ActionHistory" (
         id INTEGER PRIMARY KEY,       -- Plain integer action ID ("actionRef")
-        actionHash TEXT UNIQUE,       -- Action checksum
-        parentRef INTEGER,            -- id of parent of this action
-        actionNum INTEGER,            -- distance from root of tree in actions
+        "actionHash" TEXT UNIQUE,     -- Action checksum
+        "parentRef" INTEGER,          -- id of parent of this action
+        "actionNum" INTEGER,          -- distance from root of tree in actions
         body BLOB                     -- content of action
       )`);
-      await db.exec(`CREATE TABLE _gristsys_ActionHistoryBranch (
+      await db.exec(`CREATE TABLE "_gristsys_ActionHistoryBranch" (
         id INTEGER PRIMARY KEY,       -- Numeric branch ID
         name TEXT UNIQUE,             -- Branch name
-        actionRef INTEGER             -- Latest action on branch
+        "actionRef" INTEGER           -- Latest action on branch
       )`);
       for (const branchName of ["shared", "local_sent", "local_unsent"]) {
-        await db.run("INSERT INTO _gristsys_ActionHistoryBranch(name) VALUES(?)",
+        await db.run(`INSERT INTO "_gristsys_ActionHistoryBranch"(name) VALUES(?)`,
           branchName);
       }
       // This is a single row table (enforced by the CHECK on 'id'), containing non-shared info.
       // - ownerInstanceId is the id of the instance which owns this copy of the Grist doc.
       // - docId is also kept here because it should not be changeable by UserActions.
-      await db.exec(`CREATE TABLE _gristsys_FileInfo (
+      await db.exec(`CREATE TABLE "_gristsys_FileInfo" (
         id INTEGER PRIMARY KEY CHECK (id = 0),
-        docId TEXT DEFAULT '',
-        ownerInstanceId TEXT DEFAULT ''
+        "docId" TEXT DEFAULT '',
+        "ownerInstanceId" TEXT DEFAULT ''
       )`);
-      await db.exec("INSERT INTO _gristsys_FileInfo (id) VALUES (0)");
-      await db.exec(`CREATE TABLE _gristsys_PluginData (
-        id INTEGER PRIMARY KEY,      -- Plain integer plugin data id
-        pluginId TEXT NOT NULL,      -- Plugin id
-        key TEXT NOT NULL,           -- the key
-        value BLOB DEFAULT ''        -- the value associated with the key
+      await db.exec(`INSERT INTO "_gristsys_FileInfo" (id) VALUES (0)`);
+      await db.exec(`CREATE TABLE "_gristsys_PluginData" (
+        id INTEGER PRIMARY KEY,       -- Plain integer plugin data id
+        "pluginId" TEXT NOT NULL,     -- Plugin id
+        key TEXT NOT NULL,            -- the key
+        value BLOB DEFAULT ''         -- the value associated with the key
         );
-        -- Plugins have unique keys.
-        CREATE UNIQUE INDEX _gristsys_PluginData_unique_key on _gristsys_PluginData(pluginId, key);`);
+        CREATE UNIQUE INDEX "_gristsys_PluginData_unique_key" on "_gristsys_PluginData"("pluginId", key);`);
     },
     migrations: [
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 1 does not require a migration. Docs at v1 (or before) may not all
-        // be the same, and are only made uniform by v2.
+        // Storage version 1 does not require a migration.
       },
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 2. We change the types of all columns to BLOBs.
-        // This applies to all Grist tables, including metadata.
-        const migrationLabel = "DocStorage.docStorageSchema.migrations[v1->v2]";
+        // Storage version 2. Change column types to BLOB and fix defaults.
         const oldMaxPosDefault = String(Math.pow(2, 31) - 1);
 
-        function _upgradeTable(tableId: string) {
-          log.debug(`${migrationLabel}: table ${tableId}`);
-          // This returns rows with (at least) {name, type, dflt_value}.
-          return db.all(`PRAGMA table_info(${quoteIdent(tableId)})`)
-            .then((infoRows) => {
-              const colListSql = infoRows.map(info => quoteIdent(info.name)).join(", ");
-              const colSpecSql = infoRows.map(_sqlColSpec).join(", ");
-              const tmpTableId = DocStorage._makeTmpTableId(tableId);
-              debuglog(`${migrationLabel}: ${tableId} (${colSpecSql})`);
-              return db.runEach(
-                `CREATE TABLE ${quoteIdent(tmpTableId)} (${colSpecSql})`,
-                `INSERT INTO ${quoteIdent(tmpTableId)} SELECT ${colListSql} FROM ${quoteIdent(tableId)}`,
-                `DROP TABLE ${quoteIdent(tableId)}`,
-                `ALTER TABLE ${quoteIdent(tmpTableId)} RENAME TO ${quoteIdent(tableId)}`,
-              );
-            });
-        }
-
-        function _sqlColSpec(info: ResultRow): string {
-          if (info.name === "id") { return "id INTEGER PRIMARY KEY"; }
-          // Fix the default for PositionNumber and ManualPos types, if set to a wrong old value.
-          const dfltValue = (info.type === "REAL" && info.dflt_value === oldMaxPosDefault) ?
-            DocStorage._formattedDefault("PositionNumber") :
-            // The string "undefined" is also an invalid default; fix that too.
-            (info.dflt_value === "undefined" ? "NULL" : info.dflt_value);
-
-          return DocStorage._sqlColSpecFromDBInfo(Object.assign({}, info, {
-            type: "BLOB",
-            dflt_value: dfltValue,
-          }));
-        }
-
-        // Some migration-type steps pre-date storage migrations. We can do them once for the first
-        // proper migration (i.e. this one, to v2), and then never worry about them for upgraded docs.
-
-        // Create table for files that wasn't always created in the past.
+        // Ensure _gristsys_Files exists (wasn't always created in old docs).
         await db.exec(`CREATE TABLE IF NOT EXISTS _gristsys_Files (
-          id INTEGER PRIMARY KEY,
-          ident TEXT UNIQUE,
-          data BLOB
-         )`);
-        // Create _gristsys_Action.linkId column that wasn't always created in the past.
+          id INTEGER PRIMARY KEY, ident TEXT UNIQUE, data BLOB)`);
+
+        // Add linkId column if missing (wasn't always created in old docs).
         try {
           await db.exec("ALTER TABLE _gristsys_Action ADD COLUMN linkId INTEGER");
-          log.debug("${migrationLabel}: Column linkId added to _gristsys_Action");
         } catch (err) {
-          if (!(/duplicate/.test(err.message))) {
-            // ok if column already existed
-            throw err;
-          }
+          if (!(/duplicate|already exists/.test(err.message))) { throw err; }
         }
-        // Deal with the transition to blob types
-        const tblRows = await db.all("SELECT name FROM sqlite_master WHERE type='table'");
-        for (const tblRow of tblRows) {
-          // Note that _gristsys_Action tables in the past used Grist actions to create appropriate
-          // tables, so docs from that period would use BLOBs. For consistency, we upgrade those tables
-          // too.
-          if (tblRow.name.startsWith("_grist_") || !tblRow.name.startsWith("_") ||
-            tblRow.name.startsWith("_gristsys_Action")) {
-            await _upgradeTable(tblRow.name);
+
+        // Upgrade column types to BLOB and fix PositionNumber defaults.
+        const tables = await migrationUtils.listTables(db);
+        for (const tableId of tables) {
+          if (tableId.startsWith("_grist_") || !tableId.startsWith("_") ||
+            tableId.startsWith("_gristsys_Action")) {
+            await migrationUtils.rebuildTable(db, tableId, (col) => {
+              const dfltValue = (col.type === "REAL" && col.dflt_value === oldMaxPosDefault) ?
+                DocStorage._formattedDefault("PositionNumber") :
+                (col.dflt_value === "undefined" ? "NULL" : col.dflt_value);
+              return {type: "BLOB", name: col.name, dflt_value: dfltValue};
+            });
           }
         }
       },
@@ -234,7 +193,7 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
           await db.run("INSERT OR IGNORE INTO _gristsys_ActionHistoryBranch(name) VALUES(?)",
             branchName);
         }
-        // Migrate any ActionLog information as best we can
+        // Migrate old ActionLog data
         const actions = await db.all("SELECT * FROM _gristsys_Action ORDER BY actionNum");
         const steps = groupBy(await db.all("SELECT * FROM _gristsys_Action_step ORDER BY id"),
           "parentId");
@@ -245,26 +204,13 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
             const step = steps[action.actionNum] || [];
             const crudeTranslation: LocalActionBundle = {
               actionNum: history.getNextHubActionNum(),
-              actionHash: null,
-              parentActionHash: null,
-              envelopes: [],
-              info: [
-                0,
-                {
-                  time: action.time,
-                  user: action.user,
-                  inst: "",
-                  desc: action.desc,
-                  otherId: action.otherId,
-                  linkId: action.linkId,
-                },
-              ],
-              // Take what was logged as a UserAction and treat it as a DocAction.  Summarization
-              // currently depends on stored+undo fields to understand what changed in an ActionBundle.
-              // DocActions were not logged prior to this version, so we have to fudge things a little.
+              actionHash: null, parentActionHash: null, envelopes: [],
+              info: [0, {
+                time: action.time, user: action.user, inst: "",
+                desc: action.desc, otherId: action.otherId, linkId: action.linkId,
+              }],
               stored: [[0, JSON.parse(action.json) as DocAction]],
-              calc: [],
-              userActions: [JSON.parse(action.json)],
+              calc: [], userActions: [JSON.parse(action.json)],
               undo: step.map(row => JSON.parse(row.json)),
             };
             await history.recordNextShared(crudeTranslation);
@@ -293,124 +239,70 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
           );
           CREATE UNIQUE INDEX IF NOT EXISTS _gristsys_PluginData_unique_key on _gristsys_PluginData(pluginId, key);`);
       },
-
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 6. Migration to fix columns in user tables which have an incorrect
-        // DEFAULT for their Grist type, due to bug T462.
-        const migrationLabel = "DocStorage.docStorageSchema.migrations[v5->v6]";
-
-        const colRows: ResultRow[] = await db.all("SELECT t.tableId, c.colId, c.type " +
-          "FROM _grist_Tables_column c JOIN _grist_Tables t ON c.parentId=t.id");
-        const docSchema = new Map<string, string>();   // Maps tableId.colId to grist type.
-        for (const { tableId, colId, type } of colRows) {
+        // Storage version 6. Fix incorrect DEFAULT values due to bug T462.
+        const colRows = await db.all(
+          `SELECT t.${quoteIdent("tableId")}, c.${quoteIdent("colId")}, c.type ` +
+          `FROM ${quoteIdent("_grist_Tables_column")} c ` +
+          `JOIN ${quoteIdent("_grist_Tables")} t ON c.${quoteIdent("parentId")}=t.id`);
+        const docSchema = new Map<string, string>();
+        for (const {tableId, colId, type} of colRows) {
           docSchema.set(`${tableId}.${colId}`, type);
         }
 
-        // Fixes defaults and affected null values in a particular table.
-        async function _fixTable(tableId: string) {
-          log.debug(`${migrationLabel}: table ${tableId}`);
-          // This returns rows with (at least) {name, type, dflt_value}.
-          const infoRows: ResultRow[] = await db.all(`PRAGMA table_info(${quoteIdent(tableId)})`);
-          const origColSpecSql = infoRows.map(_sqlColSpec).join(", ");
-
-          // Get the column SQL for what the columns should be, and the value SQL for how to
-          // prepare the values to fill them in.
-          const fixes = infoRows.map(r => _getInfoAndValuesSql(r, tableId));
-          const newColSpecSql = fixes.map(pair => pair[0]).map(_sqlColSpec).join(", ");
-          const valuesSql = fixes.map(pair => pair[1]).join(", ");
-
-          // Rebuild the table only if any column's SQL (e.g. DEFAULT values) have changed.
-          if (newColSpecSql === origColSpecSql) {
-            debuglog(`${migrationLabel}: ${tableId} unchanged: (${newColSpecSql})`);
-          } else {
-            debuglog(`${migrationLabel}: ${tableId} changed: (${newColSpecSql})`);
-            const tmpTableId = DocStorage._makeTmpTableId(tableId);
-            return db.runEach(
-              `CREATE TABLE ${quoteIdent(tmpTableId)} (${newColSpecSql})`,
-              `INSERT INTO ${quoteIdent(tmpTableId)} SELECT ${valuesSql} FROM ${quoteIdent(tableId)}`,
-              `DROP TABLE ${quoteIdent(tableId)}`,
-              `ALTER TABLE ${quoteIdent(tmpTableId)} RENAME TO ${quoteIdent(tableId)}`,
-            );
-          }
-        }
-
-        // Look up the type for a single column, and if the default changed to non-NULL, construct
-        // the updated column SQL and the value SQL for how to prepare values.
-        function _getInfoAndValuesSql(info: ResultRow, tableId: string): [ResultRow, string] {
-          const qColId = quoteIdent(info.name);
-          const gristType = docSchema.get(`${tableId}.${info.name}`);
-          if (gristType) {
-            const dflt = DocStorage._formattedDefault(gristType);
-            if (info.dflt_value === "NULL" && dflt !== "NULL") {
-              return [{ ...info, dflt_value: dflt }, `IFNULL(${qColId}, ${dflt}) as ${qColId}`];
+        const tables = await migrationUtils.listTables(db);
+        for (const tableId of tables) {
+          if (tableId.startsWith("_")) { continue; }
+          await migrationUtils.rebuildTable(db, tableId, (info) => {
+            const gristType = docSchema.get(`${tableId}.${info.name}`);
+            if (gristType) {
+              const dflt = DocStorage._formattedDefault(gristType);
+              if (info.dflt_value === "NULL" && dflt !== "NULL") {
+                return {
+                  info: {...info, dflt_value: dflt},
+                  valueSql: `COALESCE(${quoteIdent(info.name)}, ${dflt})`,
+                };
+              }
             }
-          }
-          return [info, qColId];
-        }
-
-        function _sqlColSpec(info: ResultRow): string {
-          if (info.name === "id") { return "id INTEGER PRIMARY KEY"; }
-          return DocStorage._sqlColSpecFromDBInfo(info);
-        }
-
-        // Go through all user tables and fix them.
-        const tblRows = await db.all("SELECT name FROM sqlite_master WHERE type='table'");
-        for (const tblRow of tblRows) {
-          if (!tblRow.name.startsWith("_")) {
-            await _fixTable(tblRow.name);
-          }
+            return info;
+          });
         }
       },
-
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 7. Migration to store formulas in SQLite.
-        // Here, we only create empty columns for each formula column in the document. We let
-        // ActiveDoc, when it calculates formulas on open, detect that this migration just
-        // happened, and save the calculated results.
-        const colRows: ResultRow[] = await db.all("SELECT t.tableId, c.colId, c.type " +
-          "FROM _grist_Tables_column c JOIN _grist_Tables t ON c.parentId=t.id WHERE c.isFormula");
+        // Storage version 7. Add formula columns to storage.
+        const colRows = await db.all(
+          `SELECT t.${quoteIdent("tableId")}, c.${quoteIdent("colId")}, c.type ` +
+          `FROM ${quoteIdent("_grist_Tables_column")} c ` +
+          `JOIN ${quoteIdent("_grist_Tables")} t ON c.${quoteIdent("parentId")}=t.id ` +
+          `WHERE c.${quoteIdent("isFormula")}`);
 
-        // Go table by table.
         const tableColRows = groupBy(colRows, "tableId");
         for (const tableId of Object.keys(tableColRows)) {
-          // There should be no columns conflicting with formula columns, but we check and skip
-          // them if there are.
-          const infoRows = await db.all(`PRAGMA table_info(${quoteIdent(tableId)})`);
-          const presentCols = new Set([...infoRows.map(row => row.name)]);
+          const existingCols = await migrationUtils.listColumns(db, tableId);
+          const presentCols = new Set(existingCols.map(c => c.name));
           const newCols = tableColRows[tableId].filter(c => !presentCols.has(c.colId));
 
-          // Create all new columns.
-          for (const { colId, type } of newCols) {
+          for (const {colId, type} of newCols) {
             await db.exec(`ALTER TABLE ${quoteIdent(tableId)} ` +
               `ADD COLUMN ${DocStorage._columnDefWithBlobs(colId, type)}`);
           }
 
-          // Fill them in with PENDING_VALUE. This way, on first load and Calculate, they would go
-          // from "Loading..." to their proper value. After the migration, they should never have
-          // PENDING_VALUE again.
-          const colListSql = newCols.map(c => `${quoteIdent(c.colId)}=?`).join(", ");
-          const types = newCols.map(c => c.type);
-          const sqlParams = DocStorage._encodeColumnsToRows(types, newCols.map(c => [PENDING_VALUE]));
-          await db.run(`UPDATE ${quoteIdent(tableId)} SET ${colListSql}`, ...sqlParams[0]);
+          if (newCols.length > 0) {
+            const colListSql = newCols.map(c => `${quoteIdent(c.colId)}=?`).join(", ");
+            const types = newCols.map(c => c.type);
+            const sqlParams = DocStorage._encodeColumnsToRows(types, newCols.map(c => [PENDING_VALUE]));
+            await db.run(`UPDATE ${quoteIdent(tableId)} SET ${colListSql}`, ...sqlParams[0]);
+          }
         }
       },
-
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 8.
-        // Migration to add an index to _grist_Attachments.fileIdent for fast joining against _gristsys_Files.ident.
-        const tables = await db.all(`SELECT * FROM sqlite_master WHERE type='table' AND name='_grist_Attachments'`);
-        if (!tables.length) {
-          // _grist_Attachments is created in the first Python migration so doesn't exist here for new documents.
-          // createAttachmentsIndex is called separately by ActiveDoc for that.
-          return;
+        // Storage version 8. Add index on _grist_Attachments.fileIdent.
+        if (await migrationUtils.tableExists(db, "_grist_Attachments")) {
+          await createAttachmentsIndex(db);
         }
-        await createAttachmentsIndex(db);
       },
       async function(db: SQLiteDB): Promise<void> {
-        // Storage version 9.
-        // Migration to add `storage` column to _gristsys_Files, which can optionally refer to an external storage
-        // where the file is stored.
-        // Default should be NULL.
+        // Storage version 9. Add storageId column to _gristsys_Files.
         await db.exec(`ALTER TABLE _gristsys_Files ADD COLUMN storageId TEXT`);
       },
     ],
@@ -453,11 +345,11 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
    * @param {String} tableId
    * @returns {String}
    */
-  private static _makeTmpTableId(tableId: string): string {
+  public static _makeTmpTableId(tableId: string): string {
     return "_tmp_" + tableId;
   }
 
-  private static _sqlColSpecFromDBInfo(info: ResultRow): string {
+  public static _sqlColSpecFromDBInfo(info: ResultRow): string {
     return `${quoteIdent(info.name)} ${info.type} DEFAULT ${info.dflt_value}`;
   }
 

@@ -5,7 +5,7 @@
 import { TableDataAction, UserAction } from "app/common/DocActions";
 import { ActiveDoc, Deps } from "app/server/lib/ActiveDoc";
 import { makeExceptionalDocSession } from "app/server/lib/DocSession";
-import { DocStorage } from "app/server/lib/DocStorage";
+
 import { OnDemandActions, ProcessedAction } from "app/server/lib/OnDemandActions";
 import { createDocTools } from "test/server/docTools";
 import * as testUtils from "test/server/testUtils";
@@ -27,7 +27,7 @@ describe("OnDemandActions", function() {
   const fakeSession = makeExceptionalDocSession("system");
   let activeDoc1: ActiveDoc;
   let onDemandActions: OnDemandActions;
-  let docStorage: DocStorage;
+  let docStorage: any;
   const sandbox = sinon.createSandbox();
 
   // Create an OnDemand table with a few rows and columns. We'll reuse it in all test cases.

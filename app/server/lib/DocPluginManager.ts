@@ -200,7 +200,7 @@ export class DocPluginManager {
         pluginInstance.rpc.registerForwarder("grist", pluginInstance.rpc, "");
         pluginInstance.rpc.registerImpl<GristDocAPI>("GristDocAPI", this.gristDocAPI, checkers.GristDocAPI);
         pluginInstance.rpc.registerImpl<Promisified<Storage>>("DocStorage",
-          new DocPluginData(this._activeDoc.docStorage, plugin.id), checkers.Storage);
+          new DocPluginData(this._activeDoc.docStorage as any, plugin.id), checkers.Storage);
         const components = plugin.manifest.components;
         if (components) {
           const { safePython, unsafeNode } = components;

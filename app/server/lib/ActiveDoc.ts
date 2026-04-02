@@ -135,6 +135,8 @@ import { DEFAULT_CACHE_TTL, DocManager } from "app/server/lib/DocManager";
 import { DocPluginManager } from "app/server/lib/DocPluginManager";
 import { DocSession, DocSessionPrecursor, makeExceptionalDocSession, OptDocSession } from "app/server/lib/DocSession";
 import { createAttachmentsIndex, DocStorage, REMOVE_UNUSED_ATTACHMENTS_DELAY } from "app/server/lib/DocStorage";
+import { quoteIdent } from "app/server/lib/SQLiteDB";
+import { PgDocStorage } from "app/server/lib/PgDocStorage";
 import { expandQuery, getFormulaErrorForExpandQuery } from "app/server/lib/ExpandedQuery";
 import { GranularAccess, GranularAccessForBundle } from "app/server/lib/GranularAccess";
 import { GristServer } from "app/server/lib/GristServer";
@@ -276,7 +278,7 @@ export class ActiveDoc extends EventEmitter {
   }
 
   public readonly doc: Document | undefined = this._options?.doc;
-  public readonly docStorage: DocStorage;
+  public readonly docStorage: DocStorage | PgDocStorage;
   public readonly docPluginManager: DocPluginManager | null;
   public readonly docClients: DocClients;               // Only exposed for Sharing.ts
   public docData: DocData | null = null;
@@ -447,7 +449,19 @@ export class ActiveDoc extends EventEmitter {
         this._docUsage = usage;
       }
     }
-    this.docStorage = new DocStorage(_docManager.storageManager, _docName);
+    if (process.env.GRIST_DOC_BACKEND === 'postgres') {
+      const {Pool} = require('pg');
+      const pgUrl = process.env.GRIST_DOC_POSTGRES_URL || 'postgres://grist:grist@localhost:5432/gristdb';
+      // Reuse a global pool across all documents
+      if (!(global as any)._gristDocPgPool) {
+        (global as any)._gristDocPgPool = new Pool({connectionString: pgUrl, max: 20});
+      }
+      this.docStorage = new PgDocStorage(
+        _docManager.storageManager, _docName, (global as any)._gristDocPgPool
+      ) as any;
+    } else {
+      this.docStorage = new DocStorage(_docManager.storageManager, _docName);
+    }
     this.docClients = new DocClients(this);
     this._userPresence = new UserPresence(this.docClients);
     this._webhookQueue = new WebhookQueue(this, this._notifMgr);
@@ -486,7 +500,7 @@ export class ActiveDoc extends EventEmitter {
     // This will throw errors if _options?.doc or _attachmentStoreProvider aren't provided,
     // and ActiveDoc tries to use an external attachment store.
     this._attachmentFileManager = new AttachmentFileManager(
-      this.docStorage,
+      this.docStorage as any,
       _attachmentStoreProvider,
       forkId ? { id: forkId, trunkId } : { id: trunkId, trunkId: undefined },
       (extraBytes: number) => this._assertAttachmentSizeBelowLimit(extraBytes, {
@@ -897,7 +911,7 @@ export class ActiveDoc extends EventEmitter {
       this._recoveryMode);
 
     await this._actionHistory.initialize();
-    this._granularAccess = new GranularAccess(this.docData, this.docStorage, this.docClients, (query) => {
+    this._granularAccess = new GranularAccess(this.docData, this.docStorage as any, this.docClients, (query) => {
       return this._fetchQueryFromDB(query, false);
     }, this.recoveryMode, this.getHomeDbManager(), this.docName);
     await this._granularAccess.update();
@@ -2697,7 +2711,8 @@ export class ActiveDoc extends EventEmitter {
     const locale = docSession.browserSettings?.locale ?? DEFAULT_LOCALE;
     const documentSettings: DocumentSettings = { locale };
     documentSettings.engine = "python3";
-    await this.docStorage.run("UPDATE _grist_DocInfo SET timezone = ?, documentSettings = ?",
+    await this.docStorage.run(
+      `UPDATE ${quoteIdent("_grist_DocInfo")} SET timezone = ?, ${quoteIdent("documentSettings")} = ?`,
       timezone, JSON.stringify(documentSettings));
   }
 
@@ -3603,7 +3618,9 @@ export class ActiveDoc extends EventEmitter {
    * the same SQLite connection for all operations.
    */
   private _registerSQLiteDB() {
-    this._docManager.registerSQLiteDB(this.docName, this.docStorage.getDB());
+    if (this.docStorage instanceof DocStorage) {
+      this._docManager.registerSQLiteDB(this.docName, this.docStorage.getDB());
+    }
   }
 
   private _colMetadataRecords(
