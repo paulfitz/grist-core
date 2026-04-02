@@ -1,6 +1,8 @@
 import {ActiveDoc} from 'app/server/lib/ActiveDoc';
 import {makeExceptionalDocSession} from 'app/server/lib/DocSession';
+import {TestServer} from 'test/gen-server/apiUtils';
 import {createDocTools} from 'test/server/docTools';
+import axios from 'axios';
 import {assert} from 'chai';
 import * as _ from 'lodash';
 
@@ -144,5 +146,57 @@ describe('PgDocStorage', function() {
     assert.deepEqual(data.X, [10, 3]);
     assert.deepEqual(data.Y, [20, 7]);
     assert.deepEqual(data.Sum, [30, 10]);
+  });
+});
+
+describe('PgDocStorage via HTTP API', function() {
+  this.timeout(30000);
+
+  if (process.env.GRIST_DOC_BACKEND !== 'postgres') {
+    return;
+  }
+
+  let server: TestServer;
+  let serverUrl: string;
+
+  before(async function() {
+    server = new TestServer(this);
+    serverUrl = await server.start(['home', 'docs'], {}, {seedData: true});
+  });
+
+  after(async function() {
+    await server.stop();
+  });
+
+  it('should create a document with Table1 via API', async function() {
+    const cookie = await server.getCookieLogin('nasa', {
+      email: 'chimpy@getgrist.com',
+      name: 'Chimpy',
+    });
+
+    // Create a new document (this uses GRIST_DOC_WITH_TABLE1_SQL)
+    const resp = await axios.post(`${serverUrl}/api/docs`, {name: 'PgApiTest'}, cookie);
+    assert.equal(resp.status, 200);
+    const docId = resp.data;
+
+    // Table1 should exist — add a record to it
+    const addResp = await axios.post(
+      `${serverUrl}/api/docs/${docId}/tables/Table1/records`,
+      {records: [{fields: {A: 'via API', B: 99, C: true}}]},
+      cookie
+    );
+    assert.equal(addResp.status, 200);
+
+    // Fetch it back
+    const fetchResp = await axios.get(
+      `${serverUrl}/api/docs/${docId}/tables/Table1/records`,
+      cookie
+    );
+    assert.equal(fetchResp.status, 200);
+    const records = fetchResp.data.records;
+    assert.isAtLeast(records.length, 1);
+    assert.equal(records[0].fields.A, 'via API');
+    assert.equal(records[0].fields.B, 99);
+    assert.equal(records[0].fields.C, true);
   });
 });
