@@ -217,6 +217,8 @@ export class PgMinDB implements MinDB {
   private _dedicatedClient: PoolClient | null = null;
   // For transaction support: when inside a transaction, use this client
   private _txClient: PoolClient | null = null;
+  // Track whether GRIST_DOC_SQL has been applied (to skip duplicate runs)
+  private _gristDocSqlApplied: boolean = false;
 
   constructor(pool: Pool, schema: string) {
     this._pool = pool;
@@ -281,11 +283,22 @@ export class PgMinDB implements MinDB {
    * Execute one or more SQL statements (no params, no results).
    */
   public async exec(sql: string): Promise<void> {
-    // Skip GRIST_DOC_SQL when called from _createDocFile — PgDocStorage.createFile()
-    // already creates the metadata tables with properly quoted identifiers.
-    // Detect GRIST_DOC_SQL by its PRAGMA preamble.
+    // Detect GRIST_DOC_SQL / GRIST_DOC_WITH_TABLE1_SQL by the PRAGMA preamble.
+    // If PgDocStorage.createFile() already ran these, skip to avoid duplicates.
+    // Otherwise (called from _createDocFile), apply identifier quoting and run.
     if (sql.trimStart().startsWith('PRAGMA foreign_keys=OFF')) {
-      return;
+      if (this._gristDocSqlApplied) {
+        return;
+      }
+      this._gristDocSqlApplied = true;
+      // Quote unquoted _grist* identifiers, strip PRAGMA/BEGIN/COMMIT wrappers,
+      // and quote camelCase column names in CREATE INDEX.
+      sql = sql
+        .replace(/PRAGMA\s+foreign_keys\s*=\s*\w+/gi, '')
+        .replace(/BEGIN TRANSACTION/gi, '')
+        .replace(/\bCOMMIT\b/gi, '')
+        .replace(/(?<!")(_grist\w+)(?!")/g, (_m: string, name: string) => `"${name}"`)
+        .replace(/\((\w*[A-Z]\w*)\)/g, (_m: string, col: string) => `("${col}")`);
     }
 
     // Handle PRAGMA
