@@ -409,11 +409,12 @@ export class PgMinDB implements MinDB {
            ORDER BY ordinal_position`,
           [this._schema, pragma.result.tableName]
         );
-        // Mark the 'id' column as primary key
-        for (const row of r.rows) {
+        // Mark the 'id' column as primary key, filter out gristAlt_ companions
+        const filtered = r.rows.filter((row: any) => !row.name.startsWith('gristAlt_'));
+        for (const row of filtered) {
           if (row.name === 'id') { row.pk = 1; }
         }
-        return r.rows;
+        return filtered;
       }
       return [];
     }
