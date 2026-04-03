@@ -147,6 +147,96 @@ describe('PgDocStorage', function() {
     assert.deepEqual(data.Y, [20, 7]);
     assert.deepEqual(data.Sum, [30, 10]);
   });
+
+  it('should store native Postgres types queryable by external tools', async function() {
+    const doc = await docTools.createDoc('PgNative');
+    await doc.applyUserActions(fakeSession, [
+      ['AddTable', 'Typed', [
+        {id: 'Name', type: 'Text'},
+        {id: 'Active', type: 'Bool'},
+        {id: 'HireDate', type: 'Date'},
+        {id: 'LastSeen', type: 'DateTime'},
+        {id: 'Score', type: 'Numeric'},
+      ]],
+      ['AddRecord', 'Typed', null, {
+        Name: 'Alice', Active: true, HireDate: 1710460800,
+        LastSeen: 1710460800, Score: 95.5,
+      }],
+    ]);
+
+    // Verify Grist reads it back correctly
+    const data = await fetchData(doc, 'Typed');
+    assert.deepEqual(data.Name, ['Alice']);
+    assert.deepEqual(data.Active, [true]);
+    assert.deepEqual(data.HireDate, [1710460800]);
+    assert.deepEqual(data.LastSeen, [1710460800]);
+    assert.deepEqual(data.Score, [95.5]);
+
+    // Verify native types via direct Postgres query
+    const {Pool} = require('pg');
+    const pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
+    const schema = 'doc_pgnative';
+
+    const typeInfo = await pool.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'Typed'
+       AND column_name NOT LIKE 'gristAlt_%' AND column_name != 'manualSort'
+       ORDER BY ordinal_position`, [schema]
+    );
+    const types: Record<string, string> = {};
+    for (const row of typeInfo.rows) { types[row.column_name] = row.data_type; }
+
+    assert.equal(types.id, 'integer');
+    assert.equal(types.Name, 'text');
+    assert.equal(types.Active, 'boolean');
+    assert.equal(types.HireDate, 'date');
+    assert.equal(types.LastSeen, 'timestamp with time zone');
+    assert.equal(types.Score, 'numeric');
+
+    // Verify an external tool can query with native types
+    await pool.query(`SET search_path TO "${schema}"`);
+    const directResult = await pool.query(
+      `SELECT "Name", "Active", "HireDate", "Score" FROM "Typed"`
+    );
+    const row = directResult.rows[0];
+    assert.equal(row.Name, 'Alice');
+    assert.equal(row.Active, true);
+    assert.equal(row.Score, 95.5);
+    // HireDate is a JS Date from node-postgres
+    assert.instanceOf(row.HireDate, Date);
+
+    await pool.end();
+  });
+
+  it('should preserve non-conforming values in alt column', async function() {
+    const doc = await docTools.createDoc('PgAlt');
+    await doc.applyUserActions(fakeSession, [
+      ['AddTable', 'Mixed', [{id: 'Val', type: 'Numeric'}]],
+      ['AddRecord', 'Mixed', null, {Val: 42}],          // conforming
+      ['AddRecord', 'Mixed', null, {Val: 'banana'}],     // non-conforming string
+      ['AddRecord', 'Mixed', null, {Val: ['E', 'TypeError'] as any}], // error value
+    ]);
+
+    // Grist should see all values preserved
+    const data = await fetchData(doc, 'Mixed');
+    assert.deepEqual(data.Val, [42, 'banana', ['E', 'TypeError']] as any);
+
+    // Native column should have 42 for row 1, NULL for rows 2-3
+    const {Pool} = require('pg');
+    const pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
+    await pool.query(`SET search_path TO "doc_pgalt"`);
+    const r = await pool.query(
+      `SELECT "Val", "gristAlt_Val" FROM "Mixed" ORDER BY id`
+    );
+    assert.equal(r.rows[0].Val, 42);
+    assert.isNull(r.rows[0].gristAlt_Val);  // conforming: alt is NULL
+    assert.isNull(r.rows[1].Val);            // non-conforming: native is NULL
+    assert.equal(r.rows[1].gristAlt_Val, 'banana'); // alt has the raw value (jsonb parsed by node-pg)
+    assert.isNull(r.rows[2].Val);
+    assert.deepEqual(r.rows[2].gristAlt_Val, ['E', 'TypeError']);
+
+    await pool.end();
+  });
 });
 
 describe('PgDocStorage via HTTP API', function() {
