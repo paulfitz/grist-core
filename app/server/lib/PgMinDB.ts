@@ -125,6 +125,10 @@ function translateSql(sql: string): string {
   // IFNULL → COALESCE
   result = result.replace(/\bIFNULL\s*\(/gi, 'COALESCE(');
 
+  // IS NOT <expr> → IS DISTINCT FROM <expr> (SQLite null-safe inequality)
+  // Must not match IS NOT NULL (which is valid Postgres)
+  result = result.replace(/\bIS\s+NOT\s+(\$\d+)/gi, 'IS DISTINCT FROM $1');
+
   // Type translations for DDL compatibility
   // BLOB DEFAULT <value> → BYTEA DEFAULT NULL (Postgres won't accept int/string defaults for bytea)
   result = result.replace(/\bBLOB\s+DEFAULT\s+(?:0|''|"")/gi, 'BYTEA DEFAULT NULL');
