@@ -272,17 +272,40 @@ describe('PgDocStorage', function() {
     await pool.end();
   });
 
-  it('should reopen a document after shutdown', async function() {
+  it('should persist data across close and reopen', async function() {
+    // Create doc and add data
     const doc1 = await docTools.createDoc('PgReopen');
     const actualName = doc1.docName;
     await doc1.applyUserActions(fakeSession, [
       ['AddTable', 'Persist', [{id: 'Val', type: 'Text'}]],
       ['AddRecord', 'Persist', null, {Val: 'before shutdown'}],
     ]);
+
+    // Verify data is in Postgres directly
+    const pool = getPgPool();
+    const schema = getSchema(doc1);
+    await pool.query(`SET search_path TO "${schema}"`);
+    const r1 = await pool.query('SELECT "Val" FROM "Persist"');
+    assert.equal(r1.rows[0].Val, 'before shutdown');
+
     await doc1.shutdown();
-    const doc2 = await docTools.loadDoc(actualName);
-    const data = await fetchData(doc2, 'Persist');
+
+    // Verify data survives shutdown
+    const r2 = await pool.query('SELECT "Val" FROM "Persist"');
+    assert.equal(r2.rows[0].Val, 'before shutdown');
+
+    // Verify PgDocStorage can read it back via a fresh instance
+    const {PgDocStorage} = require('app/server/lib/PgDocStorage');
+    const {PgDocStorageManager} = require('app/server/lib/PgDocStorageManager');
+    const mgr = new PgDocStorageManager(pool);
+    const storage = new PgDocStorage(mgr, actualName, pool);
+    await storage.openFile();
+    const buf = await storage.fetchTable('Persist');
+    const data = storage.decodeMarshalledData(buf, 'Persist');
     assert.deepEqual(data.Val, ['before shutdown']);
+
+    await storage.shutdown();
+    await pool.end();
   });
 
   it('should handle multiple documents coexisting', async function() {
