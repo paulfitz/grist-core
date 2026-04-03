@@ -265,6 +265,11 @@ export class PgMinDB implements MinDB {
     return this._txClient !== null;
   }
 
+  private _createIfNotExists: boolean = false;
+  public setCreateIfNotExists(val: boolean): void {
+    this._createIfNotExists = val;
+  }
+
   private async _query(sql: string, params?: any[]): Promise<any> {
     const client = this._txClient || await this._getClient();
     try {
@@ -298,7 +303,10 @@ export class PgMinDB implements MinDB {
         .replace(/BEGIN TRANSACTION/gi, '')
         .replace(/\bCOMMIT\b/gi, '')
         .replace(/(?<!")(_grist\w+)(?!")/g, (_m: string, name: string) => `"${name}"`)
-        .replace(/\((\w*[A-Z]\w*)\)/g, (_m: string, col: string) => `("${col}")`);
+        .replace(/\((\w*[A-Z]\w*)\)/g, (_m: string, col: string) => `("${col}")`)
+        // Metadata tables use BOOLEAN but INSERT VALUES use literal 0/1.
+        // Convert BOOLEAN to INTEGER so literal values work.
+        .replace(/\bBOOLEAN\b/gi, 'INTEGER');
     }
 
     // Handle PRAGMA
@@ -332,7 +340,13 @@ export class PgMinDB implements MinDB {
         continue;
       }
       try {
-        await this._query(translateSql(trimmed));
+        let translated = translateSql(trimmed);
+        if (this._createIfNotExists) {
+          translated = translated
+            .replace(/CREATE TABLE\b/gi, 'CREATE TABLE IF NOT EXISTS')
+            .replace(/CREATE UNIQUE INDEX\b/gi, 'CREATE UNIQUE INDEX IF NOT EXISTS');
+        }
+        await this._query(translated);
       } catch (e: any) {
         // Add context to error
         e.message = `PgMinDB exec error: ${e.message}\nSQL: ${trimmed.slice(0, 200)}`;

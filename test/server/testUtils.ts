@@ -304,6 +304,17 @@ export async function useFixtureDoc(fileName: string, storageManager: any, alias
  */
 export async function useLocalDoc(srcPath: string, storageManager: any, alias: string = srcPath) {
   let docName = path.basename(alias || srcPath, ".grist");
+  if (process.env.GRIST_DOC_BACKEND === 'postgres' && storageManager.importGristFile) {
+    // For Postgres backend, import the .grist file into a Postgres schema
+    docName = await docUtils.createNumbered(
+      docName, "-",
+      async (name: string) => {
+        const isNew = await storageManager.prepareLocalDoc(name);
+        if (!isNew) { throw new Error("EEXIST"); }
+      });
+    await storageManager.importGristFile(docName, srcPath);
+    return docName;
+  }
   docName = await docUtils.createNumbered(
     docName, "-",
     (name: string) => docUtils.createExclusive(storageManager.getPath(name)));
@@ -312,10 +323,20 @@ export async function useLocalDoc(srcPath: string, storageManager: any, alias: s
   return docName;
 }
 
-// an helper to copy a fixtures document to destPath
+// an helper to copy a fixtures document to destPath.
+// For Postgres backend, also imports the SQLite data into a Postgres schema.
 export async function copyFixtureDoc(docName: string, destPath: string) {
   const srcPath = path.resolve(fixturesRoot, "docs", docName);
   await docUtils.copyFile(srcPath, destPath);
+  if (process.env.GRIST_DOC_BACKEND === 'postgres' && process.env.GRIST_DOC_POSTGRES_URL) {
+    const {Pool} = require('pg');
+    const {PgDocStorageManager} = require('app/server/lib/PgDocStorageManager');
+    const pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL, max: 5});
+    const mgr = new PgDocStorageManager(pool);
+    const pgDocName = path.basename(destPath, '.grist');
+    await mgr.importGristFile(pgDocName, srcPath);
+    await pool.end();
+  }
 }
 
 // a helper to read a fixtures document into memory

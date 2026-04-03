@@ -60,6 +60,113 @@ export class PgDocStorageManager implements IDocStorageManager {
     // No-op — PgDocStorage.createFile() creates the schema
   }
 
+  /**
+   * Import a .grist (SQLite) file into a Postgres schema. Creates the
+   * schema using PgDocStorage.createFile() (which sets up metadata tables
+   * with proper Postgres types), then reads data from SQLite and writes
+   * it through PgDocStorage's DocAction methods (which handle native
+   * types + gristAlt_ columns for user data).
+   */
+  public async importGristFile(docName: string, gristPath: string): Promise<void> {
+    const {PgDocStorage} = require('app/server/lib/PgDocStorage');
+    const marshal = require('app/common/marshal');
+    // @ts-ignore
+    const sqlite3 = require('@gristlabs/sqlite3');
+
+    // Open SQLite
+    const db = await new Promise<any>((resolve, reject) => {
+      const d = new sqlite3.Database(gristPath, sqlite3.OPEN_READONLY, (err: any) =>
+        err ? reject(err) : resolve(d));
+    });
+    const allSql = (sql: string): Promise<any[]> => new Promise((resolve, reject) =>
+      db.all(sql, (err: any, rows: any[]) => err ? reject(err) : resolve(rows)));
+
+    // Create the Postgres schema with proper structure via PgDocStorage
+    const storage = new PgDocStorage(this, docName, this._pool);
+    await storage.createFile();
+
+    // Also create _grist_* metadata tables (normally done by _createDocFile)
+    const {GRIST_DOC_SQL} = require('app/server/lib/initialDocSql');
+    await storage.exec(GRIST_DOC_SQL);
+
+    // Read Grist column type metadata from the SQLite file
+    const gristTables = await allSql('SELECT id, "tableId" FROM "_grist_Tables"');
+    const gristCols = await allSql(
+      'SELECT "parentId", "colId", "type" FROM "_grist_Tables_column" ORDER BY "parentPos"'
+    );
+    const tableIdMap = new Map<number, string>();
+    for (const t of gristTables) { tableIdMap.set(t.id, t.tableId); }
+    const colTypeMap = new Map<string, Map<string, string>>();
+    for (const c of gristCols) {
+      const tableId = tableIdMap.get(c.parentId);
+      if (!tableId) { continue; }
+      if (!colTypeMap.has(tableId)) { colTypeMap.set(tableId, new Map()); }
+      colTypeMap.get(tableId)!.set(c.colId, c.type);
+    }
+
+    // Import each table's data
+    const sqliteTables = await allSql(
+      "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+    );
+
+    // Import metadata tables first so _docSchema is populated before user tables
+    const metaTables = sqliteTables.filter((t: any) => t.name.startsWith('_grist_'));
+    const userTables = sqliteTables.filter((t: any) => !t.name.startsWith('_grist') && !t.name.startsWith('_gristsys_'));
+    const orderedTables = [...metaTables, ...userTables];
+
+    for (const {name: tableId} of orderedTables) {
+      const rows = await allSql(`SELECT * FROM "${tableId}"`);
+      if (rows.length === 0 && !tableId.startsWith('_grist_')) { continue; }
+
+      // Decode marshalled BLOB values from SQLite
+      for (const row of rows) {
+        for (const key of Object.keys(row)) {
+          if (Buffer.isBuffer(row[key])) {
+            try { row[key] = marshal.loads(row[key]); } catch { /* keep as-is */ }
+          }
+        }
+      }
+
+      // For user tables: create via AddTable DocAction (creates native + alt columns)
+      if (!tableId.startsWith('_grist_')) {
+        const colTypes = colTypeMap.get(tableId) || new Map<string, string>();
+        const pragmaCols = await allSql(`PRAGMA table_info("${tableId}")`);
+        const colSpecs = pragmaCols
+          .filter((c: any) => c.name && c.name !== 'id')
+          .map((c: any) => ({id: c.name, type: colTypes.get(c.name) || 'Any'}));
+        try {
+          await storage.applyStoredAction(['AddTable', tableId, colSpecs] as any);
+        } catch { /* table may already exist (e.g., Table1 from GRIST_DOC_WITH_TABLE1_SQL) */ }
+      }
+
+      // Clear seed data and insert imported data
+      try { await storage.exec(`DELETE FROM "${tableId}"`); } catch { /* ok */ }
+
+      if (rows.length > 0) {
+        const colIds = Object.keys(rows[0]).filter(c => c !== 'id');
+        const rowIds = rows.map((r: any) => r.id);
+        const colValues: any = {};
+        for (const c of colIds) {
+          colValues[c] = rows.map((r: any) => r[c]);
+        }
+        try {
+          await storage.applyStoredAction(
+            ['BulkAddRecord', tableId, rowIds, colValues] as any
+          );
+        } catch (e: any) {
+          log.warn('PgDocStorageManager: import failed for %s: %s',
+            tableId, e.message?.split('\n')[0]);
+        }
+      }
+    }
+
+    await new Promise<void>((resolve, reject) =>
+      db.close((err: any) => err ? reject(err) : resolve()));
+    await storage.shutdown();
+
+    log.info('PgDocStorageManager: imported %s into schema %s', gristPath, docNameToSchema(docName));
+  }
+
   public async prepareFork(srcDocName: string, destDocName: string): Promise<string> {
     // Copy schema by creating a new schema and copying all tables
     const srcSchema = docNameToSchema(srcDocName);
