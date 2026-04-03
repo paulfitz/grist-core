@@ -21,6 +21,16 @@ describe('PgDocStorage', function() {
     return _.omit(tableData[3], 'manualSort');
   }
 
+  function getSchema(doc: ActiveDoc): string {
+    return (doc.docStorage as any)._schema ||
+      'doc_' + doc.docName.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 60).toLowerCase();
+  }
+
+  function getPgPool(): any {
+    const {Pool} = require('pg');
+    return new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
+  }
+
   it('should create a document and add data', async function() {
     const doc = await docTools.createDoc('PgBasic');
     await doc.applyUserActions(fakeSession, [
@@ -173,9 +183,8 @@ describe('PgDocStorage', function() {
     assert.deepEqual(data.Score, [95.5]);
 
     // Verify native types via direct Postgres query
-    const {Pool} = require('pg');
-    const pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
-    const schema = 'doc_pgnative';
+    const pool = getPgPool();
+    const schema = getSchema(doc);
 
     const typeInfo = await pool.query(
       `SELECT column_name, data_type FROM information_schema.columns
@@ -222,9 +231,8 @@ describe('PgDocStorage', function() {
     assert.deepEqual(data.Val, [42, 'banana', ['E', 'TypeError']] as any);
 
     // Native column should have 42 for row 1, NULL for rows 2-3
-    const {Pool} = require('pg');
-    const pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
-    await pool.query(`SET search_path TO "doc_pgalt"`);
+    const pool = getPgPool();
+    await pool.query(`SET search_path TO "${getSchema(doc)}"`);
     const r = await pool.query(
       `SELECT "Val", "gristAlt_Val" FROM "Mixed" ORDER BY id`
     );
@@ -236,6 +244,156 @@ describe('PgDocStorage', function() {
     assert.deepEqual(r.rows[2].gristAlt_Val, ['E', 'TypeError']);
 
     await pool.end();
+  });
+
+  it('should handle ChoiceList and RefList as native arrays', async function() {
+    const doc = await docTools.createDoc('PgArrays');
+    await doc.applyUserActions(fakeSession, [
+      ['AddTable', 'Tags', [{id: 'Label', type: 'Text'}]],
+      ['BulkAddRecord', 'Tags', [null, null], {Label: ['Red', 'Blue']}],
+      ['AddTable', 'Items', [
+        {id: 'Colors', type: 'ChoiceList'},
+        {id: 'TagRefs', type: 'RefList:Tags'},
+      ]],
+      ['AddRecord', 'Items', null, {Colors: ['L', 'Red', 'Blue'] as any, TagRefs: ['L', 1, 2] as any}],
+    ]);
+
+    // Grist round-trip
+    const data = await fetchData(doc, 'Items');
+    assert.deepEqual(data.Colors, [['L', 'Red', 'Blue']] as any);
+    assert.deepEqual(data.TagRefs, [['L', 1, 2]] as any);
+
+    // Verify native Postgres arrays via direct SQL
+    const pool = getPgPool();
+    await pool.query(`SET search_path TO "${getSchema(doc)}"`);
+    const r = await pool.query('SELECT "Colors", "TagRefs" FROM "Items"');
+    assert.deepEqual(r.rows[0].Colors, ['Red', 'Blue']);
+    assert.deepEqual(r.rows[0].TagRefs, [1, 2]);
+    await pool.end();
+  });
+
+  it('should reopen a document after shutdown', async function() {
+    const doc1 = await docTools.createDoc('PgReopen');
+    const actualName = doc1.docName;
+    await doc1.applyUserActions(fakeSession, [
+      ['AddTable', 'Persist', [{id: 'Val', type: 'Text'}]],
+      ['AddRecord', 'Persist', null, {Val: 'before shutdown'}],
+    ]);
+    await doc1.shutdown();
+    const doc2 = await docTools.loadDoc(actualName);
+    const data = await fetchData(doc2, 'Persist');
+    assert.deepEqual(data.Val, ['before shutdown']);
+  });
+
+  it('should handle multiple documents coexisting', async function() {
+    const docA = await docTools.createDoc('PgMultiA');
+    const docB = await docTools.createDoc('PgMultiB');
+    await docA.applyUserActions(fakeSession, [
+      ['AddTable', 'T', [{id: 'X', type: 'Int'}]],
+      ['AddRecord', 'T', null, {X: 1}],
+    ]);
+    await docB.applyUserActions(fakeSession, [
+      ['AddTable', 'T', [{id: 'X', type: 'Int'}]],
+      ['AddRecord', 'T', null, {X: 2}],
+    ]);
+    const dataA = await fetchData(docA, 'T');
+    const dataB = await fetchData(docB, 'T');
+    assert.deepEqual(dataA.X, [1]);
+    assert.deepEqual(dataB.X, [2]);
+  });
+
+  it('should handle formula errors in alt column', async function() {
+    const doc = await docTools.createDoc('PgFormulaErr');
+    await doc.applyUserActions(fakeSession, [
+      ['AddTable', 'Err', [
+        {id: 'X', type: 'Numeric'},
+        {id: 'Inv', type: 'Numeric', isFormula: true, formula: '1 / $X'},
+      ]],
+      ['AddRecord', 'Err', null, {X: 2}],    // Inv = 0.5
+      ['AddRecord', 'Err', null, {X: 0}],    // Inv = ZeroDivisionError
+    ]);
+    const data = await fetchData(doc, 'Err');
+    assert.equal(data.Inv[0], 0.5);
+    // The second value should be an error
+    assert.isArray(data.Inv[1]);
+    assert.equal((data.Inv[1] as any)[0], 'E');
+  });
+});
+
+describe('PgDocStorageManager', function() {
+  this.timeout(30000);
+
+  if (process.env.GRIST_DOC_BACKEND !== 'postgres') {
+    return;
+  }
+
+  let pool: any;
+  let mgr: any;
+
+  before(async function() {
+    const {Pool} = require('pg');
+    const {PgDocStorageManager} = require('app/server/lib/PgDocStorageManager');
+    pool = new Pool({connectionString: process.env.GRIST_DOC_POSTGRES_URL});
+    mgr = new PgDocStorageManager(pool);
+  });
+
+  after(async function() {
+    await pool.end();
+  });
+
+  it('should detect new vs existing documents', async function() {
+    await pool.query('DROP SCHEMA IF EXISTS "doc_mgr_test" CASCADE');
+    assert.isTrue(await mgr.prepareLocalDoc('mgr_test'));  // new
+    await pool.query('CREATE SCHEMA "doc_mgr_test"');
+    assert.isFalse(await mgr.prepareLocalDoc('mgr_test'));  // exists
+    await pool.query('DROP SCHEMA "doc_mgr_test"');
+  });
+
+  it('should delete a document schema', async function() {
+    await pool.query('CREATE SCHEMA IF NOT EXISTS "doc_mgr_del"');
+    await pool.query('CREATE TABLE "doc_mgr_del".test (id int)');
+    await mgr.deleteDoc('mgr_del');
+    const r = await pool.query(
+      `SELECT 1 FROM information_schema.schemata WHERE schema_name = 'doc_mgr_del'`
+    );
+    assert.equal(r.rows.length, 0);
+  });
+
+  it('should rename a document schema', async function() {
+    await pool.query('DROP SCHEMA IF EXISTS "doc_mgr_old" CASCADE');
+    await pool.query('DROP SCHEMA IF EXISTS "doc_mgr_new" CASCADE');
+    await pool.query('CREATE SCHEMA "doc_mgr_old"');
+    await mgr.renameDoc('mgr_old', 'mgr_new');
+    const r = await pool.query(
+      `SELECT 1 FROM information_schema.schemata WHERE schema_name = 'doc_mgr_new'`
+    );
+    assert.equal(r.rows.length, 1);
+    await pool.query('DROP SCHEMA "doc_mgr_new"');
+  });
+
+  it('should list document schemas', async function() {
+    await pool.query('CREATE SCHEMA IF NOT EXISTS "doc_mgr_list1"');
+    await pool.query('CREATE SCHEMA IF NOT EXISTS "doc_mgr_list2"');
+    const docs = await mgr.listDocs();
+    const names = docs.map((d: any) => d.name);
+    assert.include(names, 'doc_mgr_list1');
+    assert.include(names, 'doc_mgr_list2');
+    await pool.query('DROP SCHEMA "doc_mgr_list1"');
+    await pool.query('DROP SCHEMA "doc_mgr_list2"');
+  });
+
+  it('should fork a document', async function() {
+    await pool.query('DROP SCHEMA IF EXISTS "doc_mgr_src" CASCADE');
+    await pool.query('DROP SCHEMA IF EXISTS "doc_mgr_dst" CASCADE');
+    await pool.query('CREATE SCHEMA "doc_mgr_src"');
+    await pool.query('CREATE TABLE "doc_mgr_src".data (id int, val text)');
+    await pool.query('INSERT INTO "doc_mgr_src".data VALUES (1, \'hello\')');
+    await mgr.prepareFork('mgr_src', 'mgr_dst');
+    await pool.query('SET search_path TO "doc_mgr_dst"');
+    const r = await pool.query('SELECT val FROM data WHERE id = 1');
+    assert.equal(r.rows[0].val, 'hello');
+    await pool.query('DROP SCHEMA "doc_mgr_src" CASCADE');
+    await pool.query('DROP SCHEMA "doc_mgr_dst" CASCADE');
   });
 });
 
