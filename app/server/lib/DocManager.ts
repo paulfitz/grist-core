@@ -555,10 +555,15 @@ export class DocManager extends EventEmitter implements IMemoryLoadEstimator {
   public async importGristDoc(docSession: OptDocSession, docId: string, srcDocPath: string): Promise<void> {
     // TODO: We should be skeptical of the upload file to close a possible
     // security vulnerability. See https://phab.getgrist.com/T457.
-    const docPath: string = this.storageManager.getPath(docId);
     await checkAllegedGristDoc(docSession, srcDocPath);
-    await docUtils.copyFile(srcDocPath, docPath);
-    await updateDocumentAttachmentStoreSettingToValidValue(docPath, this._attachmentStoreProvider);
+    if (process.env.GRIST_DOC_BACKEND === 'postgres') {
+      // Postgres backend: import via PgDocStorageManager
+      await (this.storageManager as any).importGristFile(docId, srcDocPath);
+    } else {
+      const docPath: string = this.storageManager.getPath(docId);
+      await docUtils.copyFile(srcDocPath, docPath);
+      await updateDocumentAttachmentStoreSettingToValidValue(docPath, this._attachmentStoreProvider);
+    }
   }
 
   /**
@@ -782,6 +787,12 @@ export class DocManager extends EventEmitter implements IMemoryLoadEstimator {
     const docName: string = await docUtils.createNumbered(basenameHint, "-", async (name: string) => {
       if (this._activeDocs.has(name)) {
         throw new Error("Existing entry in active docs for: " + name);
+      }
+      if (this.storageManager.docExists) {
+        if (await this.storageManager.docExists(name)) {
+          throw new Error("Existing doc: " + name);
+        }
+        return;
       }
       return docUtils.createExclusive(this.storageManager.getPath(name));
     });

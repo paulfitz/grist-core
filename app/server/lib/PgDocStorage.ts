@@ -28,8 +28,9 @@ import {quoteIdent} from 'app/server/lib/SQLiteDB';
 import {PreparedStatement, ResultRow} from 'app/server/lib/SqliteCommon';
 import {IDocStorageManager} from 'app/server/lib/IDocStorageManager';
 import {PgMinDB} from 'app/server/lib/PgMinDB';
-import {DocStorage} from 'app/server/lib/DocStorage';
+import {ATTACHMENTS_EXPIRY_DAYS, DocStorage} from 'app/server/lib/DocStorage';
 import * as schema from 'app/common/schema';
+import {v4 as uuidv4} from 'uuid';
 import log from 'app/server/lib/log';
 
 const maxParameters = 500;
@@ -59,7 +60,7 @@ function getNativePgType(colType: string | null): string {
     if (colType.startsWith('RefList:')) return 'integer[]';
     if (colType.startsWith('DateTime:')) return 'timestamptz';
   }
-  return 'jsonb';
+  return 'bytea';
 }
 
 // SQLite-compatible SQL type (used for metadata tables that go through PgMinDB translations).
@@ -71,7 +72,7 @@ function getSqlType(colType: string | null): string {
     case 'ChoiceList':
     case 'RefList':
     case 'ReferenceList':
-    case 'Attachments': return 'TEXT';
+    case 'Attachments': return 'BLOB';  // marshalled binary; PgMinDB translates BLOB→BYTEA
     case 'Date': return 'DATE';
     case 'DateTime': return 'DATETIME';
     case 'Int':
@@ -84,7 +85,7 @@ function getSqlType(colType: string | null): string {
   }
   if (colType) {
     if (colType.startsWith('Ref:')) return 'INTEGER';
-    if (colType.startsWith('RefList:')) return 'TEXT';
+    if (colType.startsWith('RefList:')) return 'BLOB';  // marshalled binary
     if (colType.startsWith('DateTime:')) return 'DATETIME';
   }
   return 'BLOB';
@@ -92,18 +93,28 @@ function getSqlType(colType: string | null): string {
 
 function formattedDefault(colType: string): string {
   const def = gristTypes.getDefaultForType(colType, {sqlFormatted: true});
-  if (def === '1e999') return '1e308';
+  if (def === '1e999') return "'Infinity'";  // Postgres numeric supports Infinity directly
   return String(def ?? 'NULL');
 }
 
 // Column definition for metadata tables (goes through PgMinDB type translations).
-function columnDef(colId: string, colType: string): string {
+export function columnDef(colId: string, colType: string): string {
   return `${quoteIdent(colId)} ${getSqlType(colType)} DEFAULT ${formattedDefault(colType)}`;
 }
 
+// Prefix for alt companion columns.
+const ALT_PREFIX = 'gristAlt_';
+
 // Alt column name for the escape hatch companion.
 function altColName(colId: string): string {
-  return `gristAlt_${colId}`;
+  return ALT_PREFIX + colId;
+}
+
+// Marshal a value to a Buffer using Grist's version-2 format.
+function marshalToBuffer(val: any): Buffer {
+  const m = new marshal.Marshaller({version: 2});
+  m.marshal(val);
+  return Buffer.from(m.dump());
 }
 
 // Whether a column needs an alt companion (user data columns only, not id/manualSort).
@@ -119,6 +130,9 @@ function nativeDefault(colType: string): string {
     case 'Bool': return 'DEFAULT FALSE';
     case 'Int': case 'Ref': case 'Reference': case 'Id': return 'DEFAULT 0';
     case 'Numeric': return 'DEFAULT 0';
+    // ManualSortPos/PositionNumber use 1e999 as a sentinel for Infinity in SQLite.
+    // Postgres numeric supports 'Infinity' directly.
+    case 'ManualSortPos': case 'PositionNumber': return "DEFAULT 'Infinity'";
     default: return 'DEFAULT NULL';
   }
 }
@@ -126,7 +140,7 @@ function nativeDefault(colType: string): string {
 // DDL for a user data column (native type + alt companion).
 function userColumnDefs(colId: string, colType: string): string {
   const nativeDef = `${quoteIdent(colId)} ${getNativePgType(colType)} ${nativeDefault(colType)}`;
-  const altDef = `${quoteIdent(altColName(colId))} jsonb DEFAULT NULL`;
+  const altDef = `${quoteIdent(altColName(colId))} bytea DEFAULT NULL`;
   return `${nativeDef}, ${altDef}`;
 }
 
@@ -143,11 +157,18 @@ function encodeNativeValue(gristType: string, val: any): any {
       return null;  // non-conforming
 
     case 'Int': case 'Ref': case 'Reference': case 'Id':
-      if (typeof val === 'number' && isFinite(val)) return Math.round(val);
+      if (typeof val === 'number' && isFinite(val) && !Object.is(val, -0)) {
+        // Only store in native if the value IS an integer (no truncation) and in 32-bit range.
+        if (val === Math.round(val) && val >= -2147483648 && val <= 2147483647) return val;
+      }
       return null;
 
     case 'Numeric': case 'ManualSortPos': case 'PositionNumber':
-      if (typeof val === 'number') return isFinite(val) ? val : null;
+      // Postgres numeric supports Infinity and -Infinity but not NaN or -0.
+      if (typeof val === 'number') {
+        if (isNaN(val) || Object.is(val, -0)) return null;  // NaN and -0 go to alt
+        return val;  // Includes finite values and ±Infinity
+      }
       return null;
 
     case 'Text': case 'Choice':
@@ -155,9 +176,10 @@ function encodeNativeValue(gristType: string, val: any): any {
       return null;
 
     case 'Date':
-      // Grist stores dates as epoch seconds. Convert to ISO date string
-      // which Postgres accepts for the date type.
-      if (typeof val === 'number' && isFinite(val) && val !== 0) {
+      // Grist stores dates as epoch seconds (midnight UTC = multiples of 86400).
+      // Only values that round-trip cleanly through Postgres date go in the native column.
+      // Non-midnight values (val % 86400 !== 0) go to alt to preserve exact value.
+      if (typeof val === 'number' && isFinite(val) && val !== 0 && val % 86400 === 0) {
         const d = new Date(val * 1000);
         return d.toISOString().slice(0, 10);  // 'YYYY-MM-DD'
       }
@@ -165,8 +187,13 @@ function encodeNativeValue(gristType: string, val: any): any {
       return null;
 
     case 'DateTime':
-      if (typeof val === 'number' && isFinite(val) && val !== 0) {
-        return new Date(val * 1000);  // node-postgres handles Date→timestamptz
+      if (typeof val === 'number' && isFinite(val) && val !== 0 && !Object.is(val, -0)) {
+        // Grist stores epoch seconds. Check range and round-trip fidelity.
+        if (val > 32503680000 || val < -62135596800) return null;
+        const d = new Date(val * 1000);
+        // Only store natively if the conversion is lossless
+        if (d.getTime() / 1000 === val) return d;
+        return null;  // lossy — goes to alt
       }
       if (val === 0) return null;
       return null;
@@ -178,22 +205,22 @@ function encodeNativeValue(gristType: string, val: any): any {
       return null;
 
     case 'RefList':
+    case 'Attachments':
       if (isList(val) && val.slice(1).every((v: any) => typeof v === 'number')) {
         return val.slice(1);  // ['L', 1, 2] → [1, 2] (node-postgres → integer[])
       }
       return null;
 
     default:
-      // Any, Attachments, etc. — store as jsonb.
-      // node-postgres needs JSON-stringified values for jsonb columns.
-      return JSON.stringify(val);
+      // Any, Blob, etc. — store as bytea using Grist's marshal format.
+      return marshalToBuffer(val);
   }
 }
 
-// Convert a Grist value to jsonb for the alt companion. Only called for non-conforming values.
+// Convert a Grist value to a marshalled binary for the alt companion (bytea).
 function encodeAltValue(val: any): any {
   if (val === null || val === undefined) return null;
-  return JSON.stringify(val);  // jsonb accepts any JSON
+  return marshalToBuffer(val);
 }
 
 function prefixJoin(prefix: string, items: string[]): string {
@@ -206,7 +233,7 @@ function quoteTable(tableId: string): string {
 }
 
 function isMetadataTable(tableId: string): boolean {
-  return tableId.startsWith('_grist_');
+  return tableId.startsWith('_grist');
 }
 
 // Decode a value read from Postgres back to Grist format.
@@ -218,7 +245,9 @@ function decodeNativeValue(val: any, gristType: string): any {
 
   switch (base) {
     case 'Bool':
-      // node-postgres returns boolean; Grist engine expects boolean
+      // Metadata tables store BOOLEAN as INTEGER (0/1) due to GRIST_DOC_SQL translation.
+      // User data tables use native boolean. Handle both.
+      if (typeof val === 'number') return Boolean(val);
       return val;
 
     case 'Date':
@@ -236,18 +265,27 @@ function decodeNativeValue(val: any, gristType: string): any {
       return val;
 
     case 'RefList':
+    case 'Attachments':
       // node-postgres returns integer[]; Grist expects ['L', 1, 2]
       if (Array.isArray(val)) return ['L', ...val];
       return val;
 
     default:
+      // Any, Blob — stored as bytea with marshal encoding
+      if (Buffer.isBuffer(val) || val instanceof Uint8Array) {
+        return marshal.loads(val);
+      }
       return val;
   }
 }
 
-// Decode an alt companion value (jsonb) back to Grist format.
+// Decode an alt companion value (bytea) back to Grist format.
 function decodeAltValue(val: any): any {
-  // jsonb values come back as parsed JS objects from node-postgres
+  if (val === null || val === undefined) return null;
+  if (Buffer.isBuffer(val) || val instanceof Uint8Array) {
+    return marshal.loads(val);
+  }
+  // Fallback for legacy jsonb-encoded values
   return val;
 }
 
@@ -259,13 +297,32 @@ function encodeColumnsToRowsSimple(types: string[], valueColumns: any[][]): any[
       const val = row[i];
       if (val === null || val === undefined) { row[i] = null; continue; }
       if (typeof val === 'boolean') { row[i] = val ? 1 : 0; continue; }
-      if (typeof val === 'number' && !isFinite(val)) { row[i] = val > 0 ? 1e308 : -1e308; continue; }
-      // For metadata tables, marshal complex types
-      if (Array.isArray(val) || val instanceof Uint8Array || Buffer.isBuffer(val)) {
+      if (typeof val === 'number' && !isFinite(val)) {
+        // Postgres numeric supports ±Infinity but not NaN.
+        if (val === Infinity || val === -Infinity) { /* keep as-is */ }
+        else { row[i] = null; }  // NaN → null
+        continue;
+      }
+      // For metadata DateTime columns (stored as TIMESTAMPTZ via PgMinDB translation),
+      // convert epoch seconds to Date object for node-postgres.
+      const colType = types[i];
+      if (colType && colType.startsWith('DateTime') && typeof val === 'number') {
+        if (val === 0) { row[i] = null; continue; }
+        if (val > 32503680000 || val < -62135596800) { row[i] = null; continue; }
+        row[i] = new Date(val * 1000);
+        continue;
+      }
+      // For metadata tables, marshal complex types to bytea.
+      // Raw Buffers (from _gristsys_* tables) are already binary — pass directly.
+      // Arrays and other JS objects need marshalling first.
+      if (Buffer.isBuffer(val) || val instanceof Uint8Array) {
+        // Already binary — pass as-is for bytea columns
+        continue;
+      }
+      if (Array.isArray(val)) {
         const marshaller = new marshal.Marshaller({version: 2});
         marshaller.marshal(val);
-        const buf = marshaller.dump();
-        row[i] = '\\x' + Buffer.from(buf).toString('hex');
+        row[i] = Buffer.from(marshaller.dump());
         continue;
       }
       // Primitives pass through
@@ -326,11 +383,25 @@ export class PgDocStorage implements ISQLiteDB {
       throw new Error(`Document schema ${this._schema} does not exist`);
     }
     this._initialized = true;
+
+    // Run storage migrations if needed (same as SQLiteDB.migrate for DocStorage).
+    const migrations = DocStorage.docStorageSchema.migrations;
+    const versionRow = await this.get(`SELECT version FROM "_gristsys_version" WHERE id = 0`);
+    const currentVersion = versionRow?.version ?? 0;
+    const targetVersion = migrations.length;
+    if (currentVersion < targetVersion) {
+      for (let i = currentVersion; i < targetVersion; i++) {
+        await migrations[i](this as any);
+      }
+      await this.run(`UPDATE "_gristsys_version" SET version = ? WHERE id = 0`, targetVersion);
+    }
+
     await this._updateMetadata();
   }
 
   public async createFile(_options?: {useExisting?: boolean}): Promise<void> {
-    // Create schema
+    // Schema cleanup is handled by prepareToCreateDoc in PgDocStorageManager,
+    // which is called by ActiveDoc before createFile. We just create here.
     await this._pool.query(`CREATE SCHEMA IF NOT EXISTS "${this._schema}"`);
 
     // Create _gristsys_version table (Postgres equivalent of PRAGMA user_version)
@@ -424,8 +495,92 @@ export class PgDocStorage implements ISQLiteDB {
 
   // ── Data fetching ───────────────────────────────────────────────
 
-  public fetchTable(tableId: string): Promise<Buffer> {
-    return this.fetchQuery({tableId, filters: {}});
+  public async fetchTable(tableId: string): Promise<Buffer> {
+    const raw = await this.fetchQuery({tableId, filters: {}});
+    if (!isMetadataTable(tableId)) {
+      return this._mergeAltColumnsInBuffer(raw, tableId);
+    }
+    return raw;
+  }
+
+  /**
+   * Merge gristAlt_ companion columns into their native columns at the marshal-buffer level.
+   *
+   * This runs on the fetchTable → load_table path (Python engine loading). The Python
+   * engine (sandbox/grist/main.py:table_data_from_db) always unmarshals the buffer and
+   * cannot handle gristAlt_ columns, so merging must happen here on the Node side.
+   *
+   * For each value: if alt is non-null, use the alt bytes (already marshalled); else
+   * keep the native value (converting arrays to marshalled blobs with 'L' tags).
+   * Optimized to skip the expensive remarshal when all alt values are NULL and no
+   * native arrays need conversion.
+   */
+  private _mergeAltColumnsInBuffer(buf: Buffer, tableId: string): Buffer {
+    const columns: Record<string, any[]> = marshal.loads(buf);
+    const altCols = new Set<string>();
+    let hasNonNullAlt = false;
+    let hasNativeArray = false;
+    for (const col of Object.keys(columns)) {
+      if (col.startsWith(ALT_PREFIX)) {
+        altCols.add(col);
+        if (!hasNonNullAlt) {
+          hasNonNullAlt = columns[col].some(v => v !== null && v !== undefined);
+        }
+      } else if (!hasNativeArray && col !== 'id' && col !== 'manualSort') {
+        hasNativeArray = columns[col].some(v => Array.isArray(v));
+      }
+    }
+    // Skip expensive remarshal if no alt values and no native arrays needing 'L' tags
+    if (altCols.size === 0 || (!hasNonNullAlt && !hasNativeArray)) {
+      // Still need to strip alt columns from the buffer if they exist
+      if (altCols.size > 0) {
+        for (const col of altCols) { delete columns[col]; }
+        const m = new marshal.Marshaller({version: 2, keysAreBuffers: true});
+        m.marshal(columns);
+        return m.dumpAsBuffer();
+      }
+      return buf;
+    }
+
+    const result: Record<string, any[]> = {};
+    for (const col of Object.keys(columns)) {
+      if (altCols.has(col)) continue;  // skip alt columns
+      const altKey = ALT_PREFIX + col;
+      if (altCols.has(altKey)) {
+        const nativeCol = columns[col];
+        const altCol = columns[altKey];
+        const merged: any[] = [];
+        for (let i = 0; i < nativeCol.length; i++) {
+          const altVal = altCol[i];
+          if (altVal !== null && altVal !== undefined) {
+            // Alt is bytea — a marshalled Grist value. Keep it as a Buffer so the
+            // Marshaller writes it as a binary string. Python will unmarshal the
+            // binary to recover the original value.
+            merged.push(altVal);
+          } else {
+            // Native values that need conversion to Grist storage format.
+            // Arrays (from integer[] or text[]) need the 'L' tag added and
+            // marshalled as blobs, since Python expects list values as blobs.
+            // Bytea values (from Any/Blob columns) are already marshalled.
+            const nv = nativeCol[i];
+            if (Array.isArray(nv)) {
+              // Re-add 'L' tag and marshal as blob for Python
+              merged.push(marshalToBuffer(['L', ...nv]));
+            } else {
+              // Primitives (numbers, strings, booleans, null) and Buffers
+              // (from bytea columns like Any/Blob) pass through directly.
+              merged.push(nv);
+            }
+          }
+        }
+        result[col] = merged;
+      } else {
+        result[col] = columns[col];
+      }
+    }
+    const m = new marshal.Marshaller({version: 2, keysAreBuffers: true});
+    m.marshal(result);
+    return m.dumpAsBuffer();
   }
 
   public async getNextRowId(tableId: string): Promise<number> {
@@ -443,7 +598,20 @@ export class PgDocStorage implements ISQLiteDB {
   public async fetchActionData(
     tableId: string, rowIds: number[], colIds?: string[]
   ): Promise<TableDataAction> {
-    const colSpec = colIds ? ['id', ...colIds].map(c => quoteIdent(c)).join(', ') : '*';
+    let colList: string[];
+    if (colIds && !isMetadataTable(tableId)) {
+      // Include alt companion columns so decodeMarshalledData can merge them.
+      colList = ['id'];
+      for (const c of colIds) {
+        colList.push(c);
+        if (needsAltColumn(c, tableId)) {
+          colList.push(altColName(c));
+        }
+      }
+    } else {
+      colList = colIds ? ['id', ...colIds] : [];
+    }
+    const colSpec = colList.length ? colList.map(c => quoteIdent(c)).join(', ') : '*';
     let fullValues: TableColValues | undefined;
 
     for (const rowIdChunk of chunk(rowIds, maxParameters)) {
@@ -468,10 +636,19 @@ export class PgDocStorage implements ISQLiteDB {
   public async fetchQuery(query: ExpandedQuery): Promise<Buffer> {
     const params: any[] = query.where?.params || [];
     const whereParts: string[] = [];
+    // Postgres has a 65535 parameter limit. Use ANY(array) for large filter sets
+    // to pass the array as a single parameter. Threshold of 30000 leaves headroom.
+    const totalFilterValues = Object.values(query.filters).reduce((sum, v) => sum + v.length, 0);
+
     for (const colId of Object.keys(query.filters)) {
       const values = query.filters[colId];
       if (values.length === 0) {
-        whereParts.push('FALSE');  // Postgres doesn't support IN ()
+        whereParts.push('FALSE');
+      } else if (totalFilterValues > 30000) {
+        // Large filter: use ANY(array) to pass as a single parameter (avoids 65535 param limit)
+        const arrayType = values.every(v => typeof v === 'number') ? '::numeric[]' : '::text[]';
+        whereParts.push(`${quoteTable(query.tableId)}.${quoteIdent(colId)} = ANY(?${arrayType})`);
+        params.push(values);
       } else {
         whereParts.push(
           `${quoteTable(query.tableId)}.${quoteIdent(colId)} IN (${values.map(() => '?').join(', ')})`
@@ -480,7 +657,7 @@ export class PgDocStorage implements ISQLiteDB {
       }
     }
     const sql = this._getSqlForQuery(query, whereParts);
-    return this._db.allMarshal(sql, ...params);
+    return this._db.allMarshalArray!(sql, params);
   }
 
   public async getAllTableNames(): Promise<string[]> {
@@ -512,7 +689,6 @@ export class PgDocStorage implements ISQLiteDB {
     }
 
     // User data tables: merge native + alt columns
-    const ALT_PREFIX = 'gristAlt_';
     const altCols = new Set<string>();
 
     for (const col of Object.keys(columnValues)) {
@@ -650,7 +826,7 @@ export class PgDocStorage implements ISQLiteDB {
       const setClauses: string[] = [];
       for (const c of cols) {
         if (needsAltColumn(c, tableId)) {
-          setClauses.push(`${quoteIdent(c)}=?, ${quoteIdent(altColName(c))}=?::jsonb`);
+          setClauses.push(`${quoteIdent(c)}=?, ${quoteIdent(altColName(c))}=?`);
         } else {
           setClauses.push(`${quoteIdent(c)}=?`);
         }
@@ -669,13 +845,40 @@ export class PgDocStorage implements ISQLiteDB {
     const cols = Object.keys(columnValues);
 
     if (isMetadataTable(tableId)) {
-      const colListSql = cols.map(c => quoteIdent(c) + ', ').join('');
-      const placeholders = cols.map(() => '?, ').join('');
-      const sql = `INSERT INTO ${quoteTable(tableId)} (${colListSql}id) VALUES (${placeholders}?)`;
       const types = cols.map(c => this._getGristType(tableId, c));
-      const sqlParams = encodeColumnsToRowsSimple(types,
-        cols.map(c => columnValues[c]).concat([rowIds]));
-      await this._applyBulkSql(sql, sqlParams);
+      // Split into rows with explicit ids and rows with null ids (auto-assign).
+      // Postgres identity columns reject NULL — must omit the id column for auto-assign.
+      const hasNullIds = rowIds.some(id => id === null || id === undefined);
+      if (!hasNullIds) {
+        const colListSql = cols.map(c => quoteIdent(c) + ', ').join('');
+        const placeholders = cols.map(() => '?, ').join('');
+        const sql = `INSERT INTO ${quoteTable(tableId)} (${colListSql}id) VALUES (${placeholders}?)`;
+        const sqlParams = encodeColumnsToRowsSimple(types,
+          cols.map(c => columnValues[c]).concat([rowIds]));
+        await this._applyBulkSql(sql, sqlParams);
+      } else {
+        // Process each row individually — include id column only when id is non-null
+        for (let r = 0; r < rowIds.length; r++) {
+          const rowVals = cols.map(c => columnValues[c][r]);
+          const rowTypes = [...types];
+          if (rowIds[r] != null) {
+            const colListSql = cols.map(c => quoteIdent(c) + ', ').join('');
+            const placeholders = cols.map(() => '?, ').join('');
+            const sql = `INSERT INTO ${quoteTable(tableId)} (${colListSql}id) VALUES (${placeholders}?)`;
+            const sqlParams = encodeColumnsToRowsSimple(rowTypes,
+              cols.map((_, i) => [rowVals[i]]).concat([[rowIds[r]]]));
+            await this._applyBulkSql(sql, sqlParams);
+          } else {
+            // Omit id column — let identity auto-assign
+            const colListSql = cols.map(c => quoteIdent(c)).join(', ');
+            const placeholders = cols.map(() => '?').join(', ');
+            const sql = `INSERT INTO ${quoteTable(tableId)} (${colListSql}) VALUES (${placeholders})`;
+            const sqlParams = encodeColumnsToRowsSimple(rowTypes,
+              cols.map((_, i) => [rowVals[i]]));
+            await this._applyBulkSql(sql, sqlParams);
+          }
+        }
+      }
     } else {
       // User data: dual-write native + alt columns
       const colParts: string[] = [];
@@ -683,13 +886,15 @@ export class PgDocStorage implements ISQLiteDB {
       for (const c of cols) {
         if (needsAltColumn(c, tableId)) {
           colParts.push(`${quoteIdent(c)}, ${quoteIdent(altColName(c))}`);
-          phParts.push('?, ?::jsonb');
+          phParts.push('?, ?');
         } else {
           colParts.push(quoteIdent(c));
           phParts.push('?');
         }
       }
-      const sql = `INSERT INTO ${quoteTable(tableId)} (${colParts.join(', ')}, id) VALUES (${phParts.join(', ')}, ?)`;
+      const colListSql = colParts.length ? colParts.join(', ') + ', ' : '';
+      const phListSql = phParts.length ? phParts.join(', ') + ', ' : '';
+      const sql = `INSERT INTO ${quoteTable(tableId)} (${colListSql}id) VALUES (${phListSql}?)`;
       const sqlParams = this._encodeUserRows(tableId, cols, columnValues, rowIds);
       await this._applyBulkSql(sql, sqlParams);
     }
@@ -725,7 +930,7 @@ export class PgDocStorage implements ISQLiteDB {
     } else {
       // Add native column + alt companion
       const nativeDef = `${quoteIdent(colId)} ${getNativePgType(colInfo.type)} ${nativeDefault(colInfo.type)}`;
-      const altDef = `${quoteIdent(altColName(colId))} jsonb DEFAULT NULL`;
+      const altDef = `${quoteIdent(altColName(colId))} bytea DEFAULT NULL`;
       await this.exec(
         `ALTER TABLE ${quoteTable(tableId)} ADD COLUMN ${nativeDef}, ADD COLUMN ${altDef}`
       );
@@ -763,11 +968,14 @@ export class PgDocStorage implements ISQLiteDB {
           `ALTER TABLE ${quoteTable(tableId)} ALTER COLUMN ${quoteIdent(colId)} TYPE ${newSqlType} USING ${quoteIdent(colId)}::${newSqlType}`
         );
       } else {
-        // Change native column type; clear values and let them be re-written
+        // Change native column type; drop default first to avoid cast conflicts,
+        // then change type (clearing values), then set the new default.
         const newNativeType = getNativePgType(colInfo.type);
-        await this.exec(
-          `ALTER TABLE ${quoteTable(tableId)} ALTER COLUMN ${quoteIdent(colId)} TYPE ${newNativeType} USING NULL`
-        );
+        const table = quoteTable(tableId);
+        const col = quoteIdent(colId);
+        await this.exec(`ALTER TABLE ${table} ALTER COLUMN ${col} DROP DEFAULT`);
+        await this.exec(`ALTER TABLE ${table} ALTER COLUMN ${col} TYPE ${newNativeType} USING NULL`);
+        await this.exec(`ALTER TABLE ${table} ALTER COLUMN ${col} SET ${nativeDefault(colInfo.type)}`);
       }
     }
   }
@@ -804,46 +1012,167 @@ export class PgDocStorage implements ISQLiteDB {
   // ── Attachment stubs ────────────────────────────────────────────
 
   public async attachFileIfNew(
-    _fileIdent: string, _fileData?: Buffer, _storageId?: string
+    fileIdent: string, fileData?: Buffer, storageId?: string
   ): Promise<boolean> {
-    // TODO: implement
-    return false;
+    return this.execTransaction(async () => {
+      const isNew = await this._addBasicFileRecord(fileIdent);
+      if (isNew) {
+        await this._updateFileRecord(fileIdent, fileData, storageId);
+      }
+      return isNew;
+    });
   }
 
   public async attachOrUpdateFile(
-    _fileIdent: string, _fileData?: Buffer, _storageId?: string
+    fileIdent: string, fileData?: Buffer, storageId?: string
   ): Promise<boolean> {
-    return false;
+    return this.execTransaction(async () => {
+      const isNew = await this._addBasicFileRecord(fileIdent);
+      await this._updateFileRecord(fileIdent, fileData, storageId);
+      return isNew;
+    });
   }
 
-  public async getFileInfo(_fileIdent: string): Promise<any> {
-    return null;
+  public async getFileInfo(fileIdent: string): Promise<any> {
+    const row = await this.get(
+      `SELECT ident, "storageId", data FROM "_gristsys_Files" WHERE ident=?`, fileIdent
+    );
+    if (!row) return null;
+    return {
+      ident: row.ident as string,
+      storageId: (row.storageId ?? null) as (string | null),
+      data: row.data ? row.data as Buffer : Buffer.alloc(0),
+    };
   }
 
-  public async getFileInfoNoData(_fileIdent: string): Promise<any> {
-    return null;
+  public async getFileInfoNoData(fileIdent: string): Promise<any> {
+    const row = await this.get(
+      `SELECT ident, "storageId" FROM "_gristsys_Files" WHERE ident=?`, fileIdent
+    );
+    if (!row) return null;
+    return {
+      ident: row.ident as string,
+      storageId: (row.storageId ?? null) as (string | null),
+      data: Buffer.alloc(0),
+    };
   }
 
   public async listAllFiles(): Promise<any[]> {
-    return [];
+    const rows = await this.all(`SELECT ident, "storageId" FROM "_gristsys_Files"`);
+    return rows.map(row => ({
+      ident: row.ident as string,
+      storageId: (row.storageId ?? null) as (string | null),
+      data: Buffer.alloc(0),
+    }));
   }
 
-  public async removeUnusedAttachments(): Promise<void> {}
-
-  public async scanAttachmentsForUsageChanges(): Promise<any[]> {
-    return [];
+  public async removeUnusedAttachments(): Promise<void> {
+    await this.run(`
+      DELETE FROM "_gristsys_Files"
+      WHERE ident IN (
+        SELECT ident
+        FROM "_gristsys_Files"
+        LEFT JOIN "_grist_Attachments"
+        ON "_grist_Attachments"."fileIdent" = "_gristsys_Files".ident
+        WHERE "_grist_Attachments"."fileIdent" IS NULL
+      )
+    `);
   }
 
-  public async findAttachmentReferences(_attId: number): Promise<any[]> {
-    return [];
+  public async scanAttachmentsForUsageChanges(): Promise<{ used: boolean, id: number }[]> {
+    // Collect all attachment IDs referenced in Attachments-type columns across all user tables.
+    // Attachments columns store integer[] arrays in Postgres.
+    const attachmentsQueries = ["SELECT 0 AS attachment_id"];
+    for (const [tableId, cols] of Object.entries(this._docSchema)) {
+      for (const [colId, type] of Object.entries(cols)) {
+        if (type === "Attachments") {
+          attachmentsQueries.push(`
+            SELECT unnest(${quoteIdent(colId)}) AS attachment_id
+            FROM ${quoteIdent(tableId)}
+            WHERE ${quoteIdent(colId)} IS NOT NULL
+          `);
+        }
+      }
+    }
+    const allAttachmentsQuery = attachmentsQueries.join(" UNION ALL ");
+    const sql = `
+      WITH all_attachment_ids AS (${allAttachmentsQuery})
+      SELECT a.id, (a.id IN (SELECT attachment_id FROM all_attachment_ids)) AS used
+      FROM "_grist_Attachments" a
+      WHERE (a.id IN (SELECT attachment_id FROM all_attachment_ids)) != (a."timeDeleted" IS NULL)
+    `;
+    return (await this.all(sql)) as any[];
   }
 
-  public async getSoftDeletedAttachmentIds(_expiredOnly: boolean): Promise<number[]> {
-    return [];
+  private async _addBasicFileRecord(fileIdent: string): Promise<boolean> {
+    // Use a savepoint so a duplicate-key failure doesn't abort the transaction.
+    // In Postgres, any error inside a transaction aborts all subsequent commands
+    // unless contained by a savepoint.
+    try {
+      await this.run(`SAVEPOINT add_file`);
+      await this.run(`INSERT INTO "_gristsys_Files" (ident) VALUES (?)`, fileIdent);
+      await this.run(`RELEASE SAVEPOINT add_file`);
+      return true;
+    } catch (err: any) {
+      await this.run(`ROLLBACK TO SAVEPOINT add_file`);
+      if (/unique.*constraint|duplicate key/i.test(err.message)) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  private async _updateFileRecord(
+    fileIdent: string, fileData?: Buffer, storageId?: string
+  ): Promise<void> {
+    await this.run(
+      `UPDATE "_gristsys_Files" SET data=?, "storageId"=? WHERE ident=?`,
+      fileData, storageId, fileIdent
+    );
+  }
+
+  public async findAttachmentReferences(attId: number): Promise<any[]> {
+    const queries: string[] = [];
+    for (const [tableId, cols] of Object.entries(this._docSchema)) {
+      for (const [colId, type] of Object.entries(cols)) {
+        if (type !== "Attachments") { continue; }
+        queries.push(`SELECT
+          t.id as "rowId",
+          '${tableId}' as "tableId",
+          '${colId}' as "colId"
+        FROM ${quoteIdent(tableId)} AS t
+        WHERE ${attId} = ANY(t.${quoteIdent(colId)})`);
+      }
+    }
+    if (queries.length === 0) { return []; }
+    return (await this.all(queries.join(" UNION ALL "))) as any[];
+  }
+
+  public async getSoftDeletedAttachmentIds(expiredOnly: boolean): Promise<number[]> {
+    // timeDeleted is stored as TIMESTAMPTZ in Postgres metadata tables
+    const condition = expiredOnly
+      ? `"timeDeleted" IS NOT NULL AND "timeDeleted" < now() - interval '${ATTACHMENTS_EXPIRY_DAYS} days'`
+      : `"timeDeleted" IS NOT NULL`;
+    const rows = await this.all(`SELECT id FROM "_grist_Attachments" WHERE ${condition}`);
+    return rows.map(r => r.id);
   }
 
   public async getTotalAttachmentFileSizes(): Promise<number> {
-    return 0;
+    const result = await this.get(`
+      SELECT COALESCE(SUM(len), 0) AS total FROM (
+        SELECT
+          CASE WHEN MAX(files."storageId") IS NOT NULL
+            THEN MAX(meta."fileSize")
+            ELSE MAX(LENGTH(files.data))
+          END AS len
+        FROM "_gristsys_Files" AS files
+          JOIN "_grist_Attachments" AS meta
+            ON meta."fileIdent" = files.ident
+        WHERE meta."timeDeleted" IS NULL
+        GROUP BY meta."fileIdent"
+      ) sub
+    `);
+    return result?.total ?? 0;
   }
 
   // ── Plugin data stubs ───────────────────────────────────────────
@@ -880,13 +1209,56 @@ export class PgDocStorage implements ISQLiteDB {
 
   public async vacuum(): Promise<void> {}
 
-  public async updateIndexes(_desiredIndexes: any[]): Promise<void> {}
-
-  public async testGetIndexes(): Promise<any[]> {
-    return [];
+  public async updateIndexes(desiredIndexes: any[]): Promise<void> {
+    const indexes = await this._getIndexes();
+    const pre = new Set<string>(indexes.map((idx: any) => `${idx.tableId}.${idx.colId}`));
+    const post = new Set<string>();
+    for (const index of desiredIndexes) {
+      const idx = `${index.tableId}.${index.colId}`;
+      if (!pre.has(idx)) {
+        const name = `auto_index_${uuidv4().replace(/-/g, '_')}`;
+        await this.exec(`CREATE INDEX ${quoteIdent(name)} ON ${quoteTable(index.tableId)}(${quoteIdent(index.colId)})`);
+      }
+      post.add(idx);
+    }
+    for (const index of indexes) {
+      const idx = `${index.tableId}.${index.colId}`;
+      if (!post.has(idx) && index.indexId.startsWith('auto_index_')) {
+        await this.exec(`DROP INDEX IF EXISTS ${quoteIdent(index.indexId)}`);
+      }
+    }
   }
 
-  public async interrupt(): Promise<void> {}
+  public async testGetIndexes(): Promise<any[]> {
+    return this._getIndexes();
+  }
+
+  private async _getIndexes(): Promise<Array<{tableId: string, indexId: string, colId: string}>> {
+    // Query pg_indexes for auto-created indexes in this schema, then parse
+    // the column name from the index definition.
+    const rows = await this._pool.query(`
+      SELECT tablename, indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = $1
+        AND tablename NOT LIKE '_grist%'
+        AND tablename NOT LIKE '_gristsys%'
+        AND indexname NOT LIKE '%_pkey'
+    `, [this._schema]);
+    const results: Array<{tableId: string, indexId: string, colId: string}> = [];
+    for (const row of rows.rows) {
+      // indexdef looks like: CREATE INDEX "name" ON "schema"."table" USING btree ("col")
+      // or: CREATE INDEX "name" ON "schema"."table" USING btree (col)
+      const match = row.indexdef.match(/\("?([^"()]+)"?\)\s*$/);
+      if (match) {
+        results.push({tableId: row.tablename, indexId: row.indexname, colId: match[1]});
+      }
+    }
+    return results;
+  }
+
+  public async interrupt(): Promise<void> {
+    return this._db.interrupt();
+  }
 
   public getOptions(): any {
     return this._db.getOptions();
@@ -941,9 +1313,27 @@ export class PgDocStorage implements ISQLiteDB {
     const whereClause = whereCondition ? `WHERE ${whereCondition}` : '';
     const limitClause = (typeof query.limit === 'number') ? `LIMIT ${query.limit}` : '';
     const joinClauses = query.joins ? query.joins.join(' ') : '';
-    const selects = query.selects ? query.selects.join(', ') : '*';
+    let selects = query.selects ? query.selects.join(', ') : '*';
+    // When explicit selects are given (e.g. from expandQuery for on-demand tables),
+    // also include any gristAlt_ companion columns so decodeMarshalledData can merge them.
+    if (query.selects && !isMetadataTable(query.tableId)) {
+      const tablePrefix = quoteIdent(query.tableId) + '.';
+      const altSelects: string[] = [];
+      for (const sel of query.selects) {
+        // sel is like "TableId"."colId" — extract the colId
+        const match = sel.match(/\."([^"]+)"$/);
+        if (match && needsAltColumn(match[1], query.tableId)) {
+          altSelects.push(`${tablePrefix}${quoteIdent(ALT_PREFIX + match[1])}`);
+        }
+      }
+      if (altSelects.length > 0) {
+        selects += ', ' + altSelects.join(', ');
+      }
+    }
     // Postgres doesn't guarantee row order; always add ORDER BY id for consistency
-    const orderClause = query.joins ? '' : 'ORDER BY id';
+    const orderClause = query.joins
+      ? `ORDER BY ${quoteTable(query.tableId)}.id`
+      : 'ORDER BY id';
     return `SELECT ${selects} FROM ${quoteTable(query.tableId)} ${joinClauses} ${whereClause} ${orderClause} ${limitClause}`;
   }
 

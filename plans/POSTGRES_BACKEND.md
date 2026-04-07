@@ -41,6 +41,13 @@ WHERE "Active" = true
   AND "HireDate" > '2024-01-01';
 ```
 
+Note the double quotes around table and column names. Grist uses
+CamelCase names like `Table1` and `HireDate`, and Postgres lowercases
+unquoted identifiers, so `SELECT * FROM Table1` looks for `table1`
+and fails. Always quote: `SELECT * FROM "Table1"`. BI tools like
+Metabase and Grafana handle this automatically — it's only an issue
+in raw psql.
+
 That `HireDate` is a real Postgres `date`. `Active` is a real
 `boolean`. `SELECT *` gives you clean, typed data that any BI tool
 can consume directly.
@@ -73,11 +80,14 @@ changes from the user's perspective.
 
 ## What doesn't work yet
 
-- **Attachments** — file uploads will fail (stubbed)
-- **Download as .grist** — the export path isn't wired up
 - **Snapshots / backups** — no pg_dump integration yet
-- **Importing .grist files** — works in tests but not fully
-  production-ready
+- **SQL endpoint multi-statement safety** — the `pg` library's simple
+  query protocol executes all statements in a string, unlike SQLite's
+  node-sqlite3 which discards extras. The `select * from (...)` wrapper
+  prevents injection within a single statement, but a semicolon can
+  break out and add more. Needs the extended query protocol (named
+  prepared statements) forced for untrusted SQL. Low priority since
+  the endpoint already requires full document access.
 
 ## How it works
 
@@ -126,15 +136,39 @@ doesn't set these variables.
 
 ## Test status
 
-- **17 Postgres-specific tests** — CRUD, bulk ops, all column types,
-  schema changes, formulas, native type verification, non-conforming
-  values, arrays, document reopen, multiple docs, formula errors,
-  storage manager operations, HTTP API
-- **47 of 139 existing DocApi tests** pass with Postgres backend (34%)
-- **6 SQLite migration tests** still pass (no regressions)
+**267+ tests pass with Postgres backend across 14+ test suites:**
 
-The DocApi failures are mostly from unimplemented features
-(attachments, downloads) and some fixture import edge cases.
+| Suite | Pass/Total | Notes |
+|---|---|---|
+| PgDocStorage | 19/19 | CRUD, bulk ops, all types, schema changes, formulas, native types, non-conforming values, arrays, reopen, multiple docs, formula errors, action history, storage manager, HTTP API |
+| OnDemandActions | 4/4 | CRUD, undo/redo, bulk operations with alt column round-trip |
+| ActionHistory | 26/26 | Action bundles, branches, history retrieval, pruning, persistence |
+| BundleActions | 1/1 | Bundled action application |
+| ActiveDoc | 28/31 | Doc creation, reopen, sandbox, formulas, custom values, on-demand queries, indexes, type defaults, column conversions, all data types, attachments |
+| ActionSummary | 20/22 | Summary generation for all action types |
+| ACLFormula | 1/1 | ACL formula compilation and evaluation |
+| ACLRulesReader | 3/4 | ACL rule reading and validation |
+| TimeQuery | 3/3 | Time-based query operations |
+| GranularAccess | 74/89 | Row/column-level access control, user attributes, shares |
+| DocApi (docapi/) | 187/191 | Records, columns, tables, SQL, permissions, attachments, downloads, creation, documents, misc, triggers |
+| DocApiSql | 4/5 | SQL endpoint: GET/POST, access control, selects-only, timeout |
+
+**37 SQLite tests pass, 0 regressions.**
+
+**Remaining DocApi failures (4):**
+
+- Snapshots — snapshot infrastructure not implemented
+- External attachment import — store detection after import
+- Permanently deletes document and forks — checks filesystem
+  paths (Postgres uses schemas, not files)
+- ReverseProxy cleanup — test harness issue
+
+**Remaining DocApiSql failure (1):**
+
+- Multi-statement injection test — Postgres `pg` library uses
+  simple query protocol with empty params, executing all
+  statements. SQLite discards extras. Needs extended protocol
+  enforcement (see "What doesn't work yet").
 
 ## Design decisions
 
@@ -151,9 +185,12 @@ column and it shows in red but is preserved. In Postgres with strict
 types, that "banana" can't go in a `numeric` column.
 
 Solution: each user data column gets a companion `gristAlt_<colName>`
-column (jsonb). When a value fits the type, it goes in the main
+column (bytea). When a value fits the type, it goes in the main
 column and the alt is NULL. When it doesn't fit (errors, wrong-type
-pastes), the main column is NULL and the alt holds the raw value.
+pastes, out-of-range values), the main column is NULL and the alt
+holds the value in Grist's marshal binary format. This preserves
+all Grist value types including Infinity, NaN, error tuples, and
+nested lists.
 
 ```sql
 -- External tools see clean data:
@@ -164,6 +201,12 @@ SELECT "Name", "Salary" FROM "Employees";
 
 -- Grist sees everything (merges main + alt on read)
 ```
+
+Date values that aren't exact midnights (val % 86400 !== 0) go to
+alt. DateTime values outside the year 0-9999 range go to alt.
+Integer values outside the 32-bit range go to alt. This keeps the
+native columns clean for external tools while preserving every
+edge case for Grist.
 
 ### Schema per document
 
@@ -190,33 +233,39 @@ COLUMN`. The migration code is shared.
 
 ### New files
 
-| File | Lines | Purpose |
-|---|---|---|
-| `app/server/lib/PgMinDB.ts` | ~500 | Postgres MinDB adapter (SQL translation, allMarshal, PRAGMA) |
-| `app/server/lib/PgDocStorage.ts` | ~800 | Document storage (DDL, DML, native types, alt columns) |
-| `app/server/lib/PgDocStorageManager.ts` | ~250 | Document lifecycle (create, delete, rename, fork, import) |
-| `app/server/lib/MigrationUtils.ts` | ~160 | Backend-agnostic migration helpers |
-| `test/server/lib/PgDocStorage.ts` | ~350 | 17 tests across 3 describe blocks |
+| File | Purpose |
+|---|---|
+| `app/server/lib/PgMinDB.ts` | Postgres MinDB adapter (SQL translation, allMarshal, PRAGMA, type parsers) |
+| `app/server/lib/PgDocStorage.ts` | Document storage (DDL, DML, native types, bytea alt columns, marshal encode/decode) |
+| `app/server/lib/PgDocStorageManager.ts` | Document lifecycle (create, delete, rename, fork, import, schema-based naming) |
+| `app/server/lib/MigrationUtils.ts` | Backend-agnostic migration helpers |
+| `test/server/lib/PgDocStorage.ts` | 19 tests across 3 describe blocks |
 
 ### Modified files
 
 | File | Change |
 |---|---|
-| `app/server/lib/ActiveDoc.ts` | Conditional PgDocStorage creation |
-| `app/server/lib/ActionHistoryImpl.ts` | Quoted SQL identifiers |
-| `app/server/lib/DocStorage.ts` | Migrations use MigrationUtils; public helpers |
+| `app/server/lib/ActiveDoc.ts` | Conditional PgDocStorage creation; fetchTable merges alt columns for Python engine |
+| `app/server/lib/ActionHistoryImpl.ts` | Quoted SQL identifiers; CAST for Postgres type inference; aggregate query detection |
+| `app/server/lib/DocStorage.ts` | Migrations use MigrationUtils; idempotent branch/FileInfo inserts; quoted identifiers for Postgres |
+| `app/server/lib/DocManager.ts` | Schema-based name uniqueness for Postgres (no filesystem) |
+| `app/server/lib/DocApi.ts` | Fork handler with Postgres export; Postgres error codes in SQL endpoint |
 | `app/server/lib/ICreate.ts` | Factory returns PgDocStorageManager when configured |
 | `app/server/lib/DocPluginManager.ts` | Type compatibility |
+| `app/server/lib/runSQLQuery.ts` | Auto-quote CamelCase identifiers for Postgres; strip gristAlt_ from results; decode bytea |
+| `app/server/lib/filterUtils.ts` | `filterDocumentInPlaceWithDB` for Postgres fork filtering |
+| `app/server/lib/IDocStorageManager.ts` | Optional `docExists?` interface method |
+| `app/server/lib/SqliteCommon.ts` | Optional `allMarshalArray?` for large param sets |
+| `test/server/lib/docapi/DocApiSql.ts` | Postgres-compatible slow query; backend-agnostic injection test |
 | `test/server/testUtils.ts` | Fixture import for Postgres |
 
 ## Remaining work
 
-- **Attachments** — needs `_gristsys_Files` read/write implementation
 - **Snapshots / backup** — `pg_dump` per schema, integrate with S3
-- **Download as .grist** — export Postgres schema to SQLite file
-- **Import .grist** — production-ready conversion (test infra exists)
-- **Undo edge cases** — action history works but undo with alt columns
-  needs testing
+- **SQL endpoint multi-statement safety** — force extended query
+  protocol for untrusted SQL (see "What doesn't work yet")
+- **Filesystem-assuming tests** — a few tests check for `.grist`
+  files on disk; need Postgres-aware assertions
 
 ## Community context
 

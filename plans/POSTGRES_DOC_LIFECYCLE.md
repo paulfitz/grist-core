@@ -13,7 +13,7 @@ fourth:
 |---------|-----------|-------------|
 | `HostedStorageManager` | Production (multi-user) | Syncs docs to S3/external storage, manages Redis worker assignments, handles snapshots. 895 lines. |
 | `DocStorageManager` | Single-user / desktop | Simple filesystem ops. 361 lines. |
-| `PgDocStorageManager` | Postgres backend (dev/test) | Schema-per-doc in Postgres. 294 lines. |
+| `PgDocStorageManager` | Postgres backend (dev/test) | Schema-per-doc in Postgres. ~500 lines. Import, export, fork, replace. |
 | `TrivialDocStorageManager` | Minimal stub | Throws on most operations. |
 
 The choice happens in `FlexServer.ts:1496-1519`. Multi-user mode uses
@@ -125,8 +125,9 @@ load the schema metadata.
 migrations, calls `_updateMetadata()`.
 
 **Postgres:** Checks the schema exists in `information_schema`, sets
-`_initialized = true`, calls `_updateMetadata()`. No migration check
-yet (Postgres docs are always created at the latest version).
+`_initialized = true`, checks schema version and runs storage
+migrations if needed (same `docStorageSchema.migrations` as SQLite),
+then calls `_updateMetadata()`.
 
 `_updateMetadata()` is the same for both backends:
 ```sql
@@ -276,24 +277,27 @@ directly.
 **Postgres:** `PgDocStorage.shutdown()` releases the dedicated pool
 client back to the pool. The schema and data persist in Postgres.
 
-## Known issue: reopen timing
+## Resolved: reopen bug
 
-When a Postgres-backed document is reopened after shutdown, the data
-is in Postgres and PgDocStorage can read it correctly. However,
-`ActiveDoc.loadDoc` → `_loadOpenDoc` → `_tableMetadataLoader` may
-report the metadata tables as empty during the streaming phase. The
-root cause hasn't been identified yet — it's somewhere in the
-interaction between `TableMetadataLoader`'s state machine and the
-fresh PgMinDB dedicated client.
+The reopen bug was caused by boolean round-trip through metadata.
+Metadata tables use `BOOLEAN → INTEGER` translation so `INSERT
+VALUES(0)` works. On read, `_grist_Tables.onDemand` returned `0`
+(integer) instead of `false` (boolean). `filterRecords({onDemand:
+false})` uses lodash `isEqual(0, false)` which returns `false`, so
+no tables matched and nothing was loaded into the Python engine.
 
-The data IS there (verified by direct Postgres queries and by
-creating a fresh PgDocStorage and calling `fetchTable`). The issue
-is specific to the `ActiveDoc` reopen path through the Python engine.
+**Fix**: `decodeNativeValue` for Bool columns converts integers to
+booleans. See POSTGRES_TESTING_INSIGHTS.md for details.
 
-Likely suspects:
-- `TableMetadataLoader` caching from a previous doc instance
-- Timing between `_getClient()` and the first metadata fetch
-- The `_gristDocSqlApplied` flag interfering with the reopen path
+## Resolved: fixture import
+
+Importing `.grist` files (SQLite) into Postgres initially used
+`GRIST_DOC_SQL` (latest schema) then imported old data, but
+migrations conflicted with the latest schema. The fix creates tables
+directly from `PRAGMA table_info` on the source SQLite file, using
+correct types from `schema.ts` (metadata) or `getNativePgType` (user
+tables). Storage migrations then run on `openFile()` to bring the
+schema up to date. See `PgDocStorageManager.importGristFile`.
 
 ## File reference
 

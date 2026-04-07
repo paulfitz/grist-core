@@ -38,6 +38,8 @@ export interface MinDB {
   prepare(sql: string, ...params: any[]): Promise<PreparedStatement>;
   runAndGetId(sql: string, ...params: any[]): Promise<number>;
   allMarshal(sql: string, ...params: any[]): Promise<Buffer>;
+  // Like allMarshal but accepts params as array (avoids stack overflow with large param sets).
+  allMarshalArray?(sql: string, params: any[]): Promise<Buffer>;
 
   close(): Promise<void>;
 

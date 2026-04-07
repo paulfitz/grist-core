@@ -73,7 +73,34 @@ export async function runSQLQuery(
   // grammar. It is straightforward to break out of such a wrapper
   // with multiple statements, but again, only the first statement
   // is processed.
-  const wrappedStatement = `select * from (${statement})`;
+  // For Postgres, auto-quote table and column names that the user left unquoted.
+  // Postgres lowercases unquoted identifiers, breaking references to CamelCase tables.
+  let quotedStatement = statement;
+  if (process.env.GRIST_DOC_BACKEND === 'postgres' && activeDoc.docData) {
+    // Collect all known table and column names
+    const knownNames = new Set<string>();
+    const tables = activeDoc.docData.getMetaTable("_grist_Tables");
+    for (const rec of tables.getRecords()) {
+      const tableId = rec.tableId as string;
+      knownNames.add(tableId);
+      const columns = activeDoc.docData.getMetaTable("_grist_Tables_column");
+      for (const col of columns.filterRecords({parentId: rec.id})) {
+        knownNames.add(col.colId as string);
+      }
+    }
+    // Also add common system columns
+    knownNames.add('manualSort');
+    // Quote known names that aren't already quoted
+    for (const name of knownNames) {
+      if (/[A-Z]/.test(name)) {
+        // Only quote names with uppercase (which Postgres would lowercase)
+        quotedStatement = quotedStatement.replace(
+          new RegExp(`(?<!")\\b${name}\\b(?!")`, 'g'), `"${name}"`
+        );
+      }
+    }
+  }
+  const wrappedStatement = `select * from (${quotedStatement})`;
   const interrupt = setTimeout(async () => {
     try {
       await activeDoc.docStorage.interrupt();
@@ -83,10 +110,29 @@ export async function runSQLQuery(
     }
   }, timeout);
   try {
-    return await activeDoc.docStorage.all(
+    let rows = await activeDoc.docStorage.all(
       wrappedStatement,
       ...(options.args || []),
     );
+    // For Postgres, clean up the result:
+    // - Strip gristAlt_* companion columns (internal to Postgres backend)
+    // - Decode bytea columns (Any/Blob types stored as marshal binary)
+    if (process.env.GRIST_DOC_BACKEND === 'postgres') {
+      const marshal = require('app/common/marshal');
+      rows = rows.map(row => {
+        const clean: Record<string, any> = {};
+        for (const [key, val] of Object.entries(row)) {
+          if (key.startsWith('gristAlt_')) { continue; }
+          if (Buffer.isBuffer(val)) {
+            try { clean[key] = marshal.loads(val); } catch { clean[key] = val; }
+          } else {
+            clean[key] = val;
+          }
+        }
+        return clean;
+      });
+    }
+    return rows;
   } finally {
     clearTimeout(interrupt);
   }

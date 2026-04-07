@@ -122,7 +122,7 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         "actionRef" INTEGER           -- Latest action on branch
       )`);
       for (const branchName of ["shared", "local_sent", "local_unsent"]) {
-        await db.run(`INSERT INTO "_gristsys_ActionHistoryBranch"(name) VALUES(?)`,
+        await db.run(`INSERT OR IGNORE INTO "_gristsys_ActionHistoryBranch"(name) VALUES(?)`,
           branchName);
       }
       // This is a single row table (enforced by the CHECK on 'id'), containing non-shared info.
@@ -133,7 +133,7 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         "docId" TEXT DEFAULT '',
         "ownerInstanceId" TEXT DEFAULT ''
       )`);
-      await db.exec(`INSERT INTO "_gristsys_FileInfo" (id) VALUES (0)`);
+      await db.exec(`INSERT OR IGNORE INTO "_gristsys_FileInfo" (id) VALUES (0)`);
       await db.exec(`CREATE TABLE "_gristsys_PluginData" (
         id INTEGER PRIMARY KEY,       -- Plain integer plugin data id
         "pluginId" TEXT NOT NULL,     -- Plugin id
@@ -1280,6 +1280,13 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
         -- External attachments have no internal blob data, so we need to use fileSize for those.
         -- To avoid tampering with fileSize in offline records, we update it whenever files are
         -- uploaded or retrieved.
+        -- Using MAX(LENGTH()) instead of just LENGTH() is needed in the presence of GROUP BY
+        -- to make LENGTH() quickly read the stored length instead of actually reading the blob data.
+        -- We use LENGTH() in the first place instead of _grist_Attachments.fileSize because the latter can
+        -- be changed by users.
+        -- External attachments have no internal blob data, so we need to use fileSize for those.
+        -- To avoid tampering with fileSize in offline records, we update it whenever files are
+        -- uploaded or retrieved.
         SELECT
           CASE WHEN files.storageId IS NOT NULL
             THEN MAX(meta.fileSize)
@@ -1485,7 +1492,8 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
   }
 
   public async getPluginDataItem(pluginId: string, key: string): Promise<any> {
-    const row = await this.get("SELECT value from _gristsys_PluginData WHERE pluginId = ? and key = ?", pluginId, key);
+    const row = await this.get(
+      `SELECT value FROM "_gristsys_PluginData" WHERE "pluginId" = ? AND key = ?`, pluginId, key);
     if (row) {
       return row.value;
     }
@@ -1497,17 +1505,20 @@ export class DocStorage implements ISQLiteDB, OnDemandStorage {
   }
 
   public async hasPluginDataItem(pluginId: string, key: string): Promise<any> {
-    const row = await this.get("SELECT value from _gristsys_PluginData WHERE pluginId=? and key=?", pluginId, key);
+    const row = await this.get(
+      `SELECT value FROM "_gristsys_PluginData" WHERE "pluginId" = ? AND key = ?`, pluginId, key);
     return typeof row !== "undefined";
   }
 
   public async setPluginDataItem(pluginId: string, key: string, value: string): Promise<void> {
-    await this.run("INSERT OR REPLACE into _gristsys_PluginData (pluginId, key, value) values (?, ?, ?)",
+    await this.run(
+      `INSERT OR REPLACE INTO "_gristsys_PluginData" ("pluginId", key, value) VALUES (?, ?, ?)`,
       pluginId, key, value);
   }
 
   public async removePluginDataItem(pluginId: string, key: string): Promise<void> {
-    await this.run("DELETE from _gristsys_PluginData where pluginId = ? and key = ?", pluginId, key);
+    await this.run(
+      `DELETE FROM "_gristsys_PluginData" WHERE "pluginId" = ? AND key = ?`, pluginId, key);
   }
 
   public async clearPluginDataItem(pluginId: string): Promise<void> {

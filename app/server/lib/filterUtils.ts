@@ -2,7 +2,7 @@ import { DocumentSettings } from "app/common/DocumentSettings";
 import { safeJsonParse } from "app/common/gutil";
 import { ActionHistoryImpl } from "app/server/lib/ActionHistoryImpl";
 import { OptDocSession } from "app/server/lib/DocSession";
-import { OpenMode, quoteIdent, SQLiteDB } from "app/server/lib/SQLiteDB";
+import { ISQLiteDB, OpenMode, quoteIdent, SQLiteDB } from "app/server/lib/SQLiteDB";
 
 /**
  * Filter a Grist document when it is copied or downloaded.  Changes that should
@@ -33,6 +33,32 @@ export async function filterDocumentInPlace(docSession: OptDocSession, filename:
   }
   if (options.removeFullCopiesSpecialRight) {
     await removeFullCopiesSpecialRight(filename);
+  }
+}
+
+/**
+ * Like filterDocumentInPlace but operates on an already-open database
+ * (ISQLiteDB). Used for Postgres backend where there's no .grist file.
+ */
+export async function filterDocumentInPlaceWithDB(
+  _docSession: OptDocSession, db: ISQLiteDB, options: {
+    removeData: boolean,
+    removeHistory: boolean,
+    removeFullCopiesSpecialRight: boolean,
+    markAction: boolean,
+  }
+) {
+  if (options.markAction) {
+    await markActionWithDB(db);
+  }
+  if (options.removeData) {
+    await removeDataWithDB(db);
+  }
+  if (options.removeHistory) {
+    await removeHistoryWithDB(db);
+  }
+  if (options.removeFullCopiesSpecialRight) {
+    await removeFullCopiesSpecialRightWithDB(db);
   }
 }
 
@@ -93,4 +119,48 @@ async function markAction(filename: string) {
       JSON.stringify(documentSettingsObj));
   }
   await db.close();
+}
+
+// ── WithDB variants: operate on an already-open ISQLiteDB ────────
+
+async function removeFullCopiesSpecialRightWithDB(db: ISQLiteDB) {
+  const resourceIds = (
+    await db.all(`SELECT id FROM "_grist_ACLResources" ` +
+      `WHERE "tableId"='*SPECIAL' AND "colIds"='FullCopies'`)
+  ).map(row => row.id as number);
+  if (resourceIds.length > 0) {
+    await db.run(`DELETE FROM "_grist_ACLRules" WHERE "resource" IN (${resourceIds})`);
+    await db.run(`DELETE FROM "_grist_ACLResources" WHERE id IN (${resourceIds})`);
+  }
+}
+
+async function removeDataWithDB(db: ISQLiteDB) {
+  const tableIds = (await db.all(
+    `SELECT table_name as name FROM information_schema.tables ` +
+    `WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'`
+  )).map(row => row.name as string)
+    .filter(name => !name.startsWith("_grist"));
+  for (const tableId of tableIds) {
+    await db.run(`DELETE FROM ${quoteIdent(tableId)}`);
+  }
+  await db.run(`DELETE FROM "_grist_Attachments"`);
+  await db.run(`DELETE FROM "_gristsys_Files"`);
+}
+
+async function removeHistoryWithDB(db: ISQLiteDB) {
+  const history = new ActionHistoryImpl(db);
+  await history.deleteActions(1);
+}
+
+async function markActionWithDB(db: ISQLiteDB) {
+  const history = new ActionHistoryImpl(db);
+  const states = await history.getRecentStates(1);
+  if (states.length > 0) {
+    const documentSettings: string =
+      (await db.all(`SELECT "documentSettings" FROM "_grist_DocInfo"`))[0]?.documentSettings;
+    const documentSettingsObj: DocumentSettings = safeJsonParse(documentSettings, {});
+    documentSettingsObj.baseAction = states[0];
+    await db.run(`UPDATE "_grist_DocInfo" SET "documentSettings" = ?`,
+      JSON.stringify(documentSettingsObj));
+  }
 }

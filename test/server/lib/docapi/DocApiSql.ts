@@ -157,12 +157,18 @@ function addSqlTests(getCtx: () => TestContext) {
     // rejected because ";" can't be nested
     await check(false, "select * from Table1; delete from Table1");
 
-    // Of course, we can get out of the wrapping select, but we can't
-    // add on more statements. For example, the following runs with no
-    // trouble - but only the SELECT part. The DELETE is discarded.
-    // (node-sqlite3 doesn't expose enough to give an error message for
-    // this, though we could extend it).
-    await check(true, "select * from Table1); delete from Table1 where id in (select id from Table1");
+    // The wrapping "select * from (...)" prevents SQL injection within a
+    // single statement. Multi-statement injection (breaking out via ";")
+    // is handled differently per backend:
+    // - SQLite: node-sqlite3 only executes the first statement (200, DELETE discarded)
+    // - Postgres: extended query protocol rejects multiple statements (400)
+    // Either way, the DELETE must not execute.
+    const injectionSql = "select * from Table1); delete from Table1 where id in (select id from Table1";
+    const injResp = await axios.post(
+      `${homeUrl}/api/docs/${docIds.Timesheets}/sql`,
+      { sql: injectionSql },
+      chimpy);
+    assert.include([200, 400], injResp.status);
     const { records } = await check(true, "select * from Table1");
     // Double-check the deletion didn't happen.
     assert.lengthOf(records, 4);
@@ -170,14 +176,18 @@ function addSqlTests(getCtx: () => TestContext) {
 
   it("POST /docs/{did}/sql timeout is effective", async function() {
     const { homeUrl, docIds, chimpy } = getCtx();
+    // Use a recursive CTE that's slow on both SQLite and Postgres.
+    // Postgres doesn't support LIMIT inside recursive CTEs, so use
+    // a WHERE condition to bound recursion and count(*) to force
+    // full evaluation.
     const slowQuery = "WITH RECURSIVE r(i) AS (VALUES(0) " +
-      "UNION ALL SELECT i FROM r  LIMIT 1000000) " +
-      "SELECT i FROM r WHERE i = 1";
+      "UNION ALL SELECT i + 1 FROM r WHERE i < 1000000) " +
+      "SELECT count(*) FROM r";
     const resp = await axios.post(
       `${homeUrl}/api/docs/${docIds.Timesheets}/sql`,
       { sql: slowQuery, timeout: 10 },
       chimpy);
     assert.equal(resp.status, 400);
-    assert.match(resp.data.error, /database interrupt/);
+    assert.match(resp.data.error, /database interrupt|cancel/);
   });
 }

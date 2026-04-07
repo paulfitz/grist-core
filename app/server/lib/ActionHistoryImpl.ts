@@ -299,7 +299,7 @@ export class ActionHistoryImpl implements ActionHistory {
     await this._db.execTransaction(async () => {
       const branches = await this._getBranches();
       const rows = await this._fetchParts(branches.shared, branches.local_unsent,
-        "${_HISTORY}.id, ${_actionHash}");
+        `${_HISTORY}.id, ${_actionHash}`);
       await this._deleteRows(rows);
       await this._db.run(`UPDATE ${_BRANCH} SET ${_actionRef} = ?
                             WHERE name IN ('local_unsent', 'local_sent')`,
@@ -314,7 +314,7 @@ export class ActionHistoryImpl implements ActionHistory {
     const branches = await this._getBranches();
     const candidates = await this._fetchParts(branches.local_sent,
       branches.local_unsent,
-      "${_HISTORY}.id, ${_actionHash}");
+      `${_HISTORY}.id, ${_actionHash}`);
     let tip: number | undefined;
     try {
       for (const act of actions) {
@@ -420,13 +420,16 @@ export class ActionHistoryImpl implements ActionHistory {
     const branches = await this._getBranches();
     const states = await this._fetchParts(null,
       branches.local_unsent,
-      "${_HISTORY}.id, ${_actionNum}, ${_actionHash}",
+      `${_HISTORY}.id, ${_actionNum}, ${_actionHash}`,
       maxStates,
       true);
     return states.map(row => ({ n: row.actionNum, h: row.actionHash }));
   }
 
   public async getActions(actionNums: number[]): Promise<(LocalActionBundle | undefined)[]> {
+    if (actionNums.length === 0) {
+      return [];
+    }
     const actions = await this._db.all(
       `SELECT ${_actionHash}, ${_actionNum}, body FROM ${_HISTORY}
        where ${_actionNum} in (${actionNums.map(x => "?").join(",")})`,
@@ -455,7 +458,7 @@ export class ActionHistoryImpl implements ActionHistory {
       const branches = await this._getBranches();
       const rows = await this._fetchParts(null,
         branches.local_unsent,
-        "${_HISTORY}.id, ${_actionHash}",
+        `${_HISTORY}.id, ${_actionHash}`,
         keepN,
         true);
       const ids = await this._deleteRows(rows, true);
@@ -595,17 +598,18 @@ export class ActionHistoryImpl implements ActionHistory {
     // See https://sqlite.org/lang_with.html for details of recursive CTEs.
     const rows = await this._db.all(`WITH RECURSIVE
                                        actions(id) AS (
-                                         VALUES(?)
+                                         VALUES(CAST(? AS integer))
                                          UNION ALL
                                            SELECT ${_parentRef} FROM ${_HISTORY}, actions
                                              WHERE ${_HISTORY}.id = actions.id
                                                AND ${_parentRef} IS NOT NULL
-                                               AND ${_HISTORY}.id IS NOT ?)
+                                               AND ${_HISTORY}.id IS NOT CAST(? AS integer))
                                      SELECT ${selection} from actions
                                        JOIN ${_HISTORY}
                                          ON actions.id = ${_HISTORY}.id
-                                       WHERE ${_HISTORY}.id IS NOT ?
-                                       ORDER BY ${_actionNum} ${desc ? "DESC " : ""}
+                                       WHERE ${_HISTORY}.id IS NOT CAST(? AS integer)
+                                       ${/\b(count|sum|avg|min|max)\s*\(/i.test(selection) ? '' :
+                                         `ORDER BY ${_actionNum} ${desc ? "DESC " : ""}`}
                                        ${limit ? ("LIMIT " + limit) : ""}`,
     end.actionRef,
     start ? start.actionRef : null,

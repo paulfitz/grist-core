@@ -252,6 +252,15 @@ export class BaseCreate implements ICreate {
   }
 
   public async createHostedDocStorageManager(...args: ConstructorParameters<typeof HostedStorageManager>) {
+    if (process.env.GRIST_DOC_BACKEND === 'postgres') {
+      const {Pool} = require('pg');
+      const {PgDocStorageManager} = require('app/server/lib/PgDocStorageManager');
+      const pgUrl = process.env.GRIST_DOC_POSTGRES_URL || 'postgres://grist:grist@localhost:5432/gristdb';
+      if (!(global as any)._gristDocPgPool) {
+        (global as any)._gristDocPgPool = new Pool({connectionString: pgUrl, max: 20});
+      }
+      return new PgDocStorageManager((global as any)._gristDocPgPool);
+    }
     return new HostedStorageManager(...args);
   }
 

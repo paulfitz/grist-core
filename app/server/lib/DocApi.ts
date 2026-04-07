@@ -520,8 +520,10 @@ export class DocWorkerApi {
 
     async function verifyAttachmentFiles(activeDoc: ActiveDoc) {
       assert.deepStrictEqual(
-        await activeDoc.docStorage.all(`SELECT DISTINCT fileIdent AS ident FROM _grist_Attachments ORDER BY ident`),
-        await activeDoc.docStorage.all(`SELECT                       ident FROM _gristsys_Files    ORDER BY ident`),
+        await activeDoc.docStorage.all(
+          `SELECT DISTINCT "fileIdent" AS ident FROM "_grist_Attachments" ORDER BY ident`),
+        await activeDoc.docStorage.all(
+          `SELECT ident FROM "_gristsys_Files" ORDER BY ident`),
       );
     }
 
@@ -686,12 +688,28 @@ export class DocWorkerApi {
       const srcDocId = stringParam(req.body.srcDocId, "srcDocId");
       if (srcDocId !== req.specialPermit?.otherDocId) { throw new Error("access denied"); }
       const fname = await this._docManager.storageManager.prepareFork(srcDocId, docId);
-      await filterDocumentInPlace(docSessionFromRequest(req), fname, {
-        removeData: false,
-        removeHistory: false,
-        removeFullCopiesSpecialRight: true,
-        markAction: true,
-      });
+      if (process.env.GRIST_DOC_BACKEND === 'postgres') {
+        // Postgres backend: operate on the schema directly via PgDocStorage
+        const {PgDocStorage} = require('app/server/lib/PgDocStorage');
+        const pool = (global as any)._gristDocPgPool;
+        const storage = new PgDocStorage(this._docManager.storageManager, docId, pool);
+        await storage.openFile();
+        const {filterDocumentInPlaceWithDB} = require('app/server/lib/filterUtils');
+        await filterDocumentInPlaceWithDB(docSessionFromRequest(req), storage, {
+          removeData: false,
+          removeHistory: false,
+          removeFullCopiesSpecialRight: true,
+          markAction: true,
+        });
+        await storage.shutdown();
+      } else {
+        await filterDocumentInPlace(docSessionFromRequest(req), fname, {
+          removeData: false,
+          removeHistory: false,
+          removeFullCopiesSpecialRight: true,
+          markAction: true,
+        });
+      }
       res.json({ srcDocId, docId });
     }));
 
@@ -2037,11 +2055,13 @@ export class DocWorkerApi {
         ),
       });
     } catch (e) {
-      if (e?.code === "SQLITE_INTERRUPT") {
+      if (e?.code === "SQLITE_INTERRUPT" || e?.code === "57014") {
+        // 57014 = query_canceled in Postgres
         res.status(400).json({
           error: "a slow statement resulted in a database interrupt",
         });
-      } else if (e?.code === "SQLITE_ERROR") {
+      } else if (e?.code === "SQLITE_ERROR" || e?.severity === "ERROR") {
+        // Postgres errors have severity="ERROR" instead of code="SQLITE_ERROR"
         res.status(400).json({
           error: e?.message,
         });

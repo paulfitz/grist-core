@@ -15,6 +15,9 @@ export interface IDocStorageManager {
   // AsyncCreate[docName].
   prepareLocalDoc(docName: string): Promise<boolean>;
   prepareToCreateDoc(docName: string): Promise<void>;
+  // Optional: check if a doc name is already taken. Used by DocManager._createNewDoc
+  // for storage managers that don't use the filesystem for name uniqueness.
+  docExists?(docName: string): Promise<boolean>;
   prepareFork(srcDocName: string, destDocName: string): Promise<string>;  // Returns filename.
 
   listDocs(): Promise<DocEntry[]>;
