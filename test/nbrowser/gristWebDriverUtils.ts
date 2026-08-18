@@ -459,9 +459,11 @@ export class GristWebDriverUtils {
    * Returns a WebElementPromise for the .viewsection_content element for the section which contains
    * the given text (case insensitive) content.
    */
-  public getSection(sectionOrTitle: string | WebElement): WebElement | WebElementPromise {
-    if (typeof sectionOrTitle !== "string") { return sectionOrTitle; }
-    return this.driver.findContent(`.test-viewsection-title`, new RegExp("^" + escapeRegExp(sectionOrTitle) + "$", "i"))
+  public getSection(sectionOrTitle: string | RegExp | WebElement): WebElement | WebElementPromise {
+    const isRegExp = sectionOrTitle instanceof RegExp;
+    if (!isRegExp && typeof sectionOrTitle !== "string") { return sectionOrTitle; }
+    const regexp = isRegExp ? sectionOrTitle : new RegExp("^" + escapeRegExp(sectionOrTitle) + "$", "i");
+    return this.driver.findContent(`.test-viewsection-title`, regexp)
       .findClosest(".viewsection_content");
   }
 

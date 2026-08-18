@@ -5,6 +5,7 @@ import { makeT } from "app/client/lib/localization";
 import { SessionObs } from "app/client/lib/sessionObs";
 import { urlState } from "app/client/models/gristUrlState";
 import { App } from "app/client/ui/App";
+import { cssAppLogo } from "app/client/ui/AppHeader";
 import { resizeFlexVHandle } from "app/client/ui/resizeHandle";
 import { hoverTooltip } from "app/client/ui/tooltips";
 import { transition, TransitionWatcher } from "app/client/ui/transitions";
@@ -186,6 +187,11 @@ export function pagePanels(page: PageContents) {
       );
     }),
     cssContentMain(
+      cssMktStyleHeader(
+        cssAppLogo(),
+        cssMktStyleTitle(dom.text((window as any).gristDocPageModel?.currentDocTitle)),
+        cssMktStyleUserIcon(dom.cls("mktstyle-user-icon")),
+      ),
       (el) => {
         regionFocusSwitcher?.onPageDomLoaded(el);
       },
@@ -548,7 +554,7 @@ export const cssLeftPane = styled(cssVBox, `
       display: none;
     }
   }
-  .interface-singlePage & {
+  .interface-singlePage &, .mktstyle:not(.mktstyle-pages) & {
     display: none;
   }
   &-overlap {
@@ -641,6 +647,10 @@ const cssHeader = styled("div", `
   .interface-singlePage & {
     display: none;
   }
+  .mktstyle & {
+    height: 28px;
+    visibility: hidden;
+  }
 `);
 const cssTopHeader = styled(cssHeader, `
   background-color: ${theme.topHeaderBg};
@@ -688,6 +698,9 @@ const cssResizeFlexVHandle = styled(resizeFlexVHandle, `
     & {
       display: none;
     }
+  }
+  .mktstyle:not(.mktstyle-pages) & {
+    display: none;
   }
 `);
 const cssResizeDisabledBorder = styled("div", `
@@ -796,3 +809,41 @@ function onPanelTransitionFinished(elem: HTMLElement, open: boolean) {
   const key = open ? FULLY_EXPANDED_PANEL_DATASET_KEY : FULLY_COLLAPSED_PANEL_DATASET_KEY;
   elem.setAttribute(key, "");
 }
+
+const cssMktStyleHeader = styled("div", `
+  width: 100%;
+  height: 28px;
+  position: absolute;
+  background-color: ${theme.pageBg};
+  z-index: 100;
+  border-bottom: 1px solid ${theme.pagePanelsBorder};
+  align-items: center;
+  display: none;
+
+  .mktstyle & {
+    display: flex;
+  }
+  .mktstyle.mktstyle-outline & {
+    padding: 1px 1px 0 1px;
+  }
+`);
+
+const cssMktStyleTitle = styled("div", `
+  flex: auto;
+  margin-left: 16px;
+  font-weight: 500;
+  color: var(--grist-color-slate);
+  font-variant: small-caps;
+  font-size: 13px;
+`);
+
+const cssMktStyleUserIcon = styled("div", `
+  flex: none;
+  height: 22px;
+  width: 22px;
+  background-size: 22px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-color: transparent;
+  margin-right: 8px;
+`);

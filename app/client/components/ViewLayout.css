@@ -28,6 +28,24 @@
   font-weight: 500;
 }
 
+.mktstyle .viewsection_title, .mktstyle .viewsection_title_font {
+  color: var(--grist-theme-text-dark);
+  font-size: var(--grist-large-font-size);
+  font-weight: var(--grist-header-text-weight);
+}
+
+.mktstyle .viewsection_title {
+  margin-top: -10px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+.mktstyle .viewsection_buttons {
+  display: none;
+}
+.mktstyle .viewsection_title:hover .viewsection_buttons {
+  display: flex;
+}
+
 .viewsection_content {
   overflow: visible;
   margin: 12px;

@@ -311,7 +311,7 @@ const cssAppHeaderBox = styled("div._cssAppHeaderBox", `
   }
 `);
 
-const cssAppLogo = styled("a._cssAppLogo", `
+export const cssAppLogo = styled("a._cssAppLogo", `
   flex: none;
   height: 100%;
   aspect-ratio: 1 / 1;
@@ -358,6 +358,13 @@ const cssAppLogo = styled("a._cssAppLogo", `
   .${cssLeftPane.className}-open & {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
+  }
+  .mktstyle & {
+    width: 20px;
+    height: 20px;
+    margin-left: 8px;
+    background-color: transparent;
+    background-size: 20px 20px;
   }
 `);
 

@@ -153,7 +153,11 @@ const cssTestClick = styled(`div`, `
 
 const cssSigmaIcon = styled(icon, `
   margin-right: 5px;
-  background-color: ${theme.lightText}
+  background-color: ${theme.lightText};
+
+  .mktstyle & {
+    bottom: unset;
+  }
 `);
 
 const cssViewLeaf = styled("div", `

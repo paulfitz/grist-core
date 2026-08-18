@@ -331,6 +331,31 @@ export function attachCssRootVars(productFlavor: ProductFlavor, varsOnly: boolea
   }
   const interfaceStyle = urlState().state.get().params?.style || "full";
   document.body.classList.add(`interface-${interfaceStyle}`);
+
+  // Syntax: mktstyle=xyz, where each letter turns something on
+  //  default (empty) => style=light (no left or right panels)
+  //  p => include pages panel
+  //  o => instead of rounded border with shadow, show border for screeshots just inside it.
+  //  f => instead of centering, show flush against the top-left corner of window (for scripts)
+  //  h => half size
+  //  w => size to the full window
+  //  l => size to a laptop-styled illustration
+  const mktStyle = new URL(location.href).searchParams.get('mktstyle');
+  if (mktStyle != null) {
+    const html = document.body.parentElement!;
+    html.classList.add(`mktstyle`);
+    if (mktStyle.includes('p')) { html.classList.add(`mktstyle-pages`); }
+    if (mktStyle.includes('o')) { html.classList.add(`mktstyle-outline`); }
+    if (mktStyle.includes('h')) { html.classList.add(`mktstyle-half`); }
+    if (mktStyle.includes('w')) { html.classList.add(`mktstyle-full-window`); }
+    if (mktStyle.includes('l')) { html.classList.add(`mktstyle-laptop-size`); }
+    if (mktStyle.includes('f')) { html.classList.add(`mktstyle-flush`); }
+    const sizes = mktStyle.match(/@(\d+)x(\d+)/);
+    if (sizes) {
+      html.style.setProperty('--mktstyle-width', `${sizes[1]}px`);
+      html.style.setProperty('--mktstyle-height', `${sizes[2]}px`);
+    }
+  }
 }
 
 // A dom method to hide element in print view
