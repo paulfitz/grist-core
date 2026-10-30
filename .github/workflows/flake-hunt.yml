@@ -1,0 +1,108 @@
+name: Flake hunt
+
+# Runs browser tests on other runners and sandbox flavors, to find tests that
+# only fail when things are slower or different from the main CI. A push to a
+# flake-hunt branch runs it with the defaults below, using pyodide if the branch
+# name says so; workflow_dispatch needs this file on the default branch.
+
+on:
+  push:
+    branches: ['paulfitz/flake-hunt*']
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner
+        type: choice
+        options: [macos-15-intel, macos-15, macos-14, ubuntu-24.04]
+        default: macos-15-intel
+      flavor:
+        description: Sandbox flavor (blank for the default)
+        type: choice
+        options: ['', pyodide, macSandboxExec, unsandboxed]
+        default: ''
+      groups:
+        description: JSON list of GREP_TESTS patterns, one job each
+        default: '["^C", "^[FM]", "^[AGIO]", "^[RSTU]", "^[^ACFGIMORSTU]"]'
+      passes:
+        description: JSON list of pass numbers; each group runs once per pass
+        default: '[1]'
+      jobs:
+        description: Mocha parallel jobs per runner
+        default: '3'
+
+env:
+  FLAVOR: ${{ inputs.flavor || (contains(github.ref_name, 'pyodide') && 'pyodide' || '') }}
+
+jobs:
+  nbrowser:
+    runs-on: ${{ inputs.os || 'macos-15-intel' }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(inputs.groups || '["^C", "^[FM]", "^[AGIO]", "^[RSTU]", "^[^ACFGIMORSTU]"]') }}
+        pass: ${{ fromJSON(inputs.passes || '[1]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: yarn
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Python packages
+        run: |
+          pip install virtualenv
+          yarn run install:python
+
+      - name: Install Node.js packages
+        run: yarn run set-community-edition
+
+      - name: Install gvisor
+        if: runner.os == 'Linux'
+        run: |
+          docker create --name temp-runsc gristlabs/gvisor-unprivileged:buster /bin/true
+          sudo docker cp temp-runsc:/runsc /usr/bin/runsc
+          docker rm temp-runsc
+
+      - name: Set up pyodide
+        if: env.FLAVOR == 'pyodide'
+        run: cd sandbox/pyodide && make setup
+
+      - name: Build Node.js code
+        run: yarn run build
+
+      - name: Install Google Chrome and chromedriver
+        if: runner.os == 'Linux'
+        run: buildtools/install_chrome_for_tests.sh -y
+
+      - name: Run browser tests
+        run: |
+          mkdir -p $MOCHA_WEBDRIVER_LOGDIR
+          if [[ -n "$FLAVOR" ]]; then export GRIST_SANDBOX_FLAVOR=$FLAVOR; fi
+          MOCHA_WEBDRIVER_SKIP_CLEANUP=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:nbrowser --parallel --jobs $JOBS
+        env:
+          GREP_TESTS: ${{ matrix.group }}
+          JOBS: ${{ inputs.jobs || '3' }}
+          MOCHA_WEBDRIVER_LOGDIR: ${{ runner.temp }}/test-logs/webdriver
+          GVISOR_FLAGS: "-unprivileged -ignore-cgroups"
+          GVISOR_EXTRA_DIRS: /opt
+          TESTDIR: ${{ runner.temp }}/test-logs
+
+      - name: Name the logs
+        if: failure()
+        id: name
+        run: echo "artifact=logs-${{ inputs.os || 'macos-15-intel' }}-${{ env.FLAVOR || 'default' }}-pass${{ matrix.pass }}-$(echo '${{ matrix.group }}' | sed 's/[^-a-zA-Z0-9]/_/g')" >> $GITHUB_OUTPUT
+
+      - name: Save the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.artifact }}
+          path: ${{ runner.temp }}/test-logs
+          if-no-files-found: ignore
