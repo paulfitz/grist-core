@@ -2,8 +2,10 @@ name: Flake hunt
 
 # Runs browser tests on other runners and sandbox flavors, to find tests that
 # only fail when things are slower or different from the main CI. A push to a
-# flake-hunt branch runs it with the defaults below, using pyodide if the branch
-# name says so; workflow_dispatch needs this file on the default branch.
+# flake-hunt branch runs it with the defaults below; workflow_dispatch needs this
+# file on the default branch. If the branch name says pyodide, it uses pyodide,
+# runs one test file at a time in smaller groups, and puts grist-desktop's floor
+# under the tests' timeouts (see ../flake-hunt/slow-sandbox.js).
 
 on:
   push:
@@ -36,11 +38,11 @@ env:
 jobs:
   nbrowser:
     runs-on: ${{ inputs.os || 'macos-15-intel' }}
-    timeout-minutes: 150
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(inputs.groups || '["^C", "^[FM]", "^[AGIO]", "^[RSTU]", "^[^ACFGIMORSTU]"]') }}
+        group: ${{ fromJSON(inputs.groups || (contains(github.ref_name, 'pyodide') && '["^A", "^B", "^C", "^D", "^[EF]", "^[GHI]", "^[JKLM]", "^[NOP]", "^[RS]", "^[^A-PRS]"]' || '["^C", "^[FM]", "^[AGIO]", "^[RSTU]", "^[^ACFGIMORSTU]"]')) }}
         pass: ${{ fromJSON(inputs.passes || '[1]') }}
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +87,12 @@ jobs:
         run: |
           mkdir -p $MOCHA_WEBDRIVER_LOGDIR
           if [[ -n "$FLAVOR" ]]; then export GRIST_SANDBOX_FLAVOR=$FLAVOR; fi
-          MOCHA_WEBDRIVER_SKIP_CLEANUP=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:nbrowser --parallel --jobs $JOBS
+          if [[ "$FLAVOR" == pyodide ]]; then
+            MOCHA_WEBDRIVER_SKIP_CLEANUP=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:nbrowser \
+              --require $PWD/.github/flake-hunt/slow-sandbox.js --timeout 120000
+          else
+            MOCHA_WEBDRIVER_SKIP_CLEANUP=1 MOCHA_WEBDRIVER_HEADLESS=1 yarn run test:nbrowser --parallel --jobs $JOBS
+          fi
         env:
           GREP_TESTS: ${{ matrix.group }}
           JOBS: ${{ inputs.jobs || '3' }}
