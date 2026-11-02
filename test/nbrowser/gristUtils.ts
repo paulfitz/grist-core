@@ -3309,13 +3309,14 @@ namespace gristUtils {
  */
   export async function onNewTabForUrl(url: string, action: () => Promise<void>, options?: { test?: Mocha.Runnable }) {
     const currentTab = await driver.getWindowHandle();
-    await driver.executeScript((urlArg: string) => { window.open(urlArg, "_blank"); }, url);
-    const tabs = await driver.getAllWindowHandles();
-    const newTab = tabs[tabs.length - 1];
     const test = options?.test;
     let failed = false;
     if (test) { await fetchScreenshotAndLogs(test); }
-    await driver.switchTo().window(newTab);
+    // Open the tab through WebDriver rather than window.open(). A tab the page opens shares its
+    // renderer, and on slow machines it was seen paused by the debugger, hanging the page too.
+    await driver.switchTo().newWindow("tab");
+    const newTab = await driver.getWindowHandle();
+    await driver.get(url);
     try {
       await action();
     } catch (e) {
