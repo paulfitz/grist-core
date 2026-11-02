@@ -24,7 +24,7 @@ on:
         default: ''
       groups:
         description: JSON list of GREP_TESTS patterns, one job each
-        default: '["^A", "^B", "^C", "^D", "^[EF]", "^[GHI]", "^[JKLM]", "^[NOP]", "^[RS]", "^[^A-PRS]"]'
+        default: '["^[EF]"]'
       passes:
         description: JSON list of pass numbers; each group runs once per pass
         default: '[1]'
@@ -42,8 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(inputs.groups || '["^A", "^B", "^C", "^D", "^[EF]", "^[GHI]", "^[JKLM]", "^[NOP]", "^[RS]", "^[^A-PRS]"]') }}
-        pass: ${{ fromJSON(inputs.passes || '[1]') }}
+        group: ${{ fromJSON(inputs.groups || '["^[EF]"]') }}
+        pass: ${{ fromJSON(inputs.passes || '[1, 2, 3]') }}
     steps:
       - uses: actions/checkout@v4
 
