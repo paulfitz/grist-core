@@ -24,7 +24,7 @@ on:
         default: ''
       groups:
         description: JSON list of GREP_TESTS patterns, one job each
-        default: '["^(Fork|FormsUrlValues) ", "^FormsUrlValues "]'
+        default: '["^(Fork|FormsUrlValues) "]'
       passes:
         description: JSON list of pass numbers; each group runs once per pass
         default: '[1]'
@@ -42,8 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: ${{ fromJSON(inputs.groups || '["^(Fork|FormsUrlValues) ", "^FormsUrlValues "]') }}
-        pass: ${{ fromJSON(inputs.passes || '[1, 2, 3]') }}
+        group: ${{ fromJSON(inputs.groups || '["^(Fork|FormsUrlValues) "]') }}
+        pass: ${{ fromJSON(inputs.passes || '[1, 2]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -98,6 +98,7 @@ jobs:
         env:
           GREP_TESTS: ${{ matrix.group }}
           GRIST_LOG_HTTP: "true"
+          MOCHA_WEBDRIVER_ARGS: --log-net-log=${{ runner.temp }}/test-logs/netlog.json --net-log-capture-mode=Default
           JOBS: ${{ inputs.jobs || '1' }}
           MOCHA_WEBDRIVER_LOGDIR: ${{ runner.temp }}/test-logs/webdriver
           GVISOR_FLAGS: "-unprivileged -ignore-cgroups"
